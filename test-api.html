@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GHIN Middleware API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+        }
+        .endpoint {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>GHIN Middleware API Test Console</h1>
+    <p>Base URL: <code>http://localhost:5001/api/v1</code></p>
+
+    <div class="endpoint">
+        <h3>GET /health</h3>
+        <button onclick="testHealth()">Test Health Check</button>
+        <pre id="health-result">Click button to test</pre>
+    </div>
+
+    <div class="endpoint">
+        <h3>GET /players/:ghinNumber</h3>
+        <label>GHIN Number: <input type="text" id="ghinNumber" value="1234567"></label>
+        <button onclick="testGetPlayer()">Get Player</button>
+        <pre id="player-result">Click button to test</pre>
+    </div>
+
+    <div class="endpoint">
+        <h3>POST /players/batch</h3>
+        <button onclick="testBatchPlayers()">Get Batch Players (3)</button>
+        <pre id="batch-result">Click button to test</pre>
+    </div>
+
+    <div class="endpoint">
+        <h3>POST /players/search</h3>
+        <label>First Name: <input type="text" id="firstName" value="Clayton"></label>
+        <label>Last Name: <input type="text" id="lastName" value="Cobb"></label>
+        <button onclick="testSearchPlayers()">Search Players</button>
+        <pre id="search-result">Click button to test</pre>
+    </div>
+
+    <div class="endpoint">
+        <h3>GET /courses/:ghinCourseId</h3>
+        <label>Course ID: <input type="text" id="courseId" value="GHIN-54321"></label>
+        <button onclick="testGetCourse()">Get Course</button>
+        <pre id="course-result">Click button to test</pre>
+    </div>
+
+    <div class="endpoint">
+        <h3>POST /courses/search</h3>
+        <label>Course Name: <input type="text" id="courseName" value="Indian Hills"></label>
+        <label>State: <input type="text" id="state" value="NY"></label>
+        <button onclick="testSearchCourses()">Search Courses</button>
+        <pre id="course-search-result">Click button to test</pre>
+    </div>
+
+    <script>
+        const BASE_URL = 'http://localhost:5001/api/v1';
+
+        async function makeRequest(endpoint, options = {}) {
+            try {
+                const response = await fetch(`${BASE_URL}${endpoint}`, options);
+                const data = await response.json();
+                return { success: response.ok, status: response.status, data };
+            } catch (error) {
+                return { success: false, error: error.message };
+            }
+        }
+
+        async function testHealth() {
+            const result = await makeRequest('/health');
+            document.getElementById('health-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testGetPlayer() {
+            const ghinNumber = document.getElementById('ghinNumber').value;
+            const result = await makeRequest(`/players/${ghinNumber}`);
+            document.getElementById('player-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testBatchPlayers() {
+            const result = await makeRequest('/players/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ghinNumbers: ['1234567', '2345678', '3456789']
+                })
+            });
+            document.getElementById('batch-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testSearchPlayers() {
+            const firstName = document.getElementById('firstName').value;
+            const lastName = document.getElementById('lastName').value;
+            const result = await makeRequest('/players/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ firstName, lastName })
+            });
+            document.getElementById('search-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testGetCourse() {
+            const courseId = document.getElementById('courseId').value;
+            const result = await makeRequest(`/courses/${courseId}`);
+            document.getElementById('course-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testSearchCourses() {
+            const courseName = document.getElementById('courseName').value;
+            const state = document.getElementById('state').value;
+            const result = await makeRequest('/courses/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ courseName, state })
+            });
+            document.getElementById('course-search-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+    </script>
+</body>
+</html>
