@@ -1,0 +1,65 @@
+2025-12-23T02:31:16  Fetching changes.
+2025-12-23T02:31:16    Starting  LocalZipHandler
+2025-12-23T02:31:16    Cleaning up temp folders from previous zip deployments and extracting pushed zip file /tmp/zipdeploy/da01ebc3-00fa-4096-a255-d61efe1209f7.zip (0.08 MB) to /tmp/zipdeploy/extracted
+2025-12-23T02:31:20  Updating submodules.
+2025-12-23T02:31:20  Preparing deployment for commit id '90d56f09-3'.
+2025-12-23T02:31:21  PreDeployment: context.CleanOutputPath False
+2025-12-23T02:31:21  PreDeployment: context.OutputPath /home/site/wwwroot
+2025-12-23T02:31:22  Repository path is /tmp/zipdeploy/extracted
+2025-12-23T02:31:22  Running oryx build...
+2025-12-23T02:31:22    Command: oryx build /tmp/zipdeploy/extracted -o /home/site/wwwroot --platform nodejs --platform-version 20 -p virtualenv_name= --log-file /tmp/build-debug.log  -i /tmp/8de41cb5bfef939 -p compress_node_modules=tar-gz | tee /tmp/oryx-build.log
+2025-12-23T02:31:25    Operation performed by Microsoft Oryx, https://github.com/Microsoft/Oryx
+2025-12-23T02:31:25    You can report issues at https://github.com/Microsoft/Oryx/issues
+2025-12-23T02:31:25    
+2025-12-23T02:31:25    Oryx Version: 0.2.20251022.1+bef98bc7139feefaa74be16de9d835e2c85385d4, Commit: bef98bc7139feefaa74be16de9d835e2c85385d4, ReleaseTagName: 20251022.1
+2025-12-23T02:31:25    
+2025-12-23T02:31:25    Build Operation ID: 150168d8a251a5e6
+2025-12-23T02:31:26    Repository Commit : 90d56f09-370c-4a6e-a2e1-de87a70c7e28
+2025-12-23T02:31:26    OS Type           : bookworm
+2025-12-23T02:31:26    Image Type        : githubactions
+2025-12-23T02:31:26    
+2025-12-23T02:31:26    Primary SDK Storage URL: https://oryx-cdn.microsoft.io
+2025-12-23T02:31:26    Backup SDK Storage URL: 
+2025-12-23T02:31:26    Detecting platforms...
+2025-12-23T02:31:26    External SDK provider is enabled.
+2025-12-23T02:31:27    Requesting metadata for platform nodejs from external SDK provider
+2025-12-23T02:31:28    Requesting metadata for platform nodejs from external SDK provider
+2025-12-23T02:31:29    Detected following platforms:
+2025-12-23T02:31:29      nodejs: 20.19.5
+2025-12-23T02:31:29    Detected the following frameworks: Express
+2025-12-23T02:31:30    
+2025-12-23T02:31:31    Using intermediate directory '/tmp/8de41cb5bfef939'.
+2025-12-23T02:31:31    
+2025-12-23T02:31:31    Copying files to the intermediate directory...
+2025-12-23T02:31:31    Done in 1 sec(s).
+2025-12-23T02:31:31    
+2025-12-23T02:31:31    Source directory     : /tmp/8de41cb5bfef939
+2025-12-23T02:31:31    Destination directory: /home/site/wwwroot
+2025-12-23T02:31:31    
+2025-12-23T02:31:32    Removing existing manifest file
+2025-12-23T02:31:32    Creating directory for command manifest file if it does not exist
+2025-12-23T02:31:32    Creating a manifest file...
+2025-12-23T02:31:32    Node Build Command Manifest file created.
+2025-12-23T02:31:32    
+2025-12-23T02:31:32    Using Node version:
+2025-12-23T02:31:32    v20.19.5
+2025-12-23T02:31:32    
+2025-12-23T02:31:32    Using Npm version:
+2025-12-23T02:31:33    10.8.2
+2025-12-23T02:31:33    
+2025-12-23T02:31:34    Running 'npm install'...
+2025-12-23T02:31:34    
+2025-12-23T02:35:25    
+2025-12-23T02:35:25    added 275 packages, and audited 276 packages in 4m
+2025-12-23T02:35:25    
+2025-12-23T02:35:25    93 packages are looking for funding
+2025-12-23T02:35:26      run `npm fund` for details
+2025-12-23T02:35:26    
+2025-12-23T02:35:26    3 moderate severity vulnerabilities
+2025-12-23T02:35:26    
+2025-12-23T02:35:26    To address all issues (including breaking changes), run:
+2025-12-23T02:35:26      npm audit fix --force
+2025-12-23T02:35:26    
+2025-12-23T02:35:26    Run `npm audit` for details.
+2025-12-23T02:35:26    
+2025-12-23T02:35:26    Zipping existing node_modules folder...

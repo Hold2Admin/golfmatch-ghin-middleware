@@ -35,16 +35,15 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        echo "Creating deploy.zip with node_modules"
+        echo "Creating deploy.zip (Azure will run npm install)"
         rm -f deploy.zip
         zip -r deploy.zip \
           src \
-          node_modules \
           package.json \
           package-lock.json \
           README.md \
           GETTING-STARTED.md \
-          -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**"
+          -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**" "node_modules/**"
 
     - name: Parse publish profile
       id: ppmeta

@@ -1,0 +1,5 @@
+<step title="Incoming Request" date="2025-12-24T20:16:41.186" instance="637a66" url="/diagnostics/runtime" method="GET" type="request" pid="835,1,15" Host="golfmatch-ghin-middleware.scm.azurewebsites.net" User-Agent="GITHUBACTIONS_DeployWebAppToAzure_397774f9b6d6b08b1d68ed8652d51118e36f842952d37c896a08699b67916cd7" Authorization="Bas..." Content-Type="application/json; charset=utf-8" Content-Length="0" X-ARR-LOG-ID="68a28e07-6385-4bab-9223-8d6e28302e22" CLIENT-IP="52.225.25.98:33808" X-SITE-DEPLOYMENT-ID="golfmatch-ghin-middleware" WAS-DEFAULT-HOSTNAME="golfmatch-ghin-middleware.scm.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/diagnostics/runtime" X-Client-IP="52.225.25.98" X-Client-Port="33808" >
+  <step title="Cleanup Xml Logs" date="2025-12-24T20:16:41.196" /><!-- duration: 20ms -->
+  <step title="RuntimeController.GetRuntimeVersions" date="2025-12-24T20:16:41.426" /><!-- duration: 49ms -->
+  <step title="Outgoing response" date="2025-12-24T20:16:41.497" type="response" statusCode="200" statusText="OK" /><!-- duration: 17ms -->
+</step><!-- duration: 339ms -->

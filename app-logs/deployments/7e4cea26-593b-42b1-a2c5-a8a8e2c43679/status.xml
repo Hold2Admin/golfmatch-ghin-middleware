@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>7e4cea26-593b-42b1-a2c5-a8a8e2c43679</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"bb50648a2aca3459c094496e49c13494c31ca53c","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"CI: Cache npm; deploy minimal package; retrying health check"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T20:17:07.6741897Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T20:16:56.0757649Z</receivedTime>
+  <startTime>2025-12-24T20:16:57.8891472Z</startTime>
+  <endTime>2025-12-24T20:17:07.6741897Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

@@ -1,0 +1,19 @@
+<step title="Incoming Request" date="2025-12-23T02:22:31.699" instance="52038d" url="/api/zipdeploy?isAsync=true" method="POST" type="request" pid="835,1,5" Accept="*/*" Host="golfmatch-ghin-middleware.scm.azurewebsites.net" User-Agent="AZURECLI/2.79.0 (MSI)" Accept-Encoding="gzip, deflate" Authorization="Bea..." Cache-Control="no-cache" Content-Type="application/octet-stream" Content-Length="84290" x-ms-client-request-id="38ef2881-dfa6-11f0-ad6a-c8348e202cea" x-ms-artifact-checksum="4bcbbbd42fd7b00fab9f78615663f198099576df5248fb073e6c27b9ee46c980" X-ARR-LOG-ID="38ef2881-dfa6-11f0-ad6a-c8348e202cea" CLIENT-IP="71.190.91.214:59743" X-SITE-DEPLOYMENT-ID="golfmatch-ghin-middleware" WAS-DEFAULT-HOSTNAME="golfmatch-ghin-middleware.scm.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/api/zipdeploy?isAsync=true" X-Client-IP="71.190.91.214" X-Client-Port="59743" >
+  <step title="Cleanup Xml Logs" date="2025-12-23T02:22:31.729" /><!-- duration: 27ms -->
+  <step title="ZipPushDeploy" date="2025-12-23T02:22:41.679" >
+    <step title="ZipDeploy. Extract zip. Remote build." date="2025-12-23T02:22:41.988" /><!-- duration: 10ms -->
+    <step title="None repository commit" date="2025-12-23T02:22:42.080" >
+      <step title="Commit id: f72f97b0-9fd8-46c8-acbc-995b276dc877" date="2025-12-23T02:22:42.129" Message="N/A" AuthorName="N/A" AuthorEmail="N/A" /><!-- duration: 69ms -->
+    </step><!-- duration: 147ms -->
+    <step title="Starting PushDeployAsync" date="2025-12-23T02:22:42.278" /><!-- duration: 12ms -->
+    <step title="Writing artifact to /tmp/zipdeploy/d8991661-e9fe-4549-9cd9-6f59f1a1b24e.zip" date="2025-12-23T02:22:42.642" >
+      <step title="Writing multipart request body to /tmp/zipdeploy/d8991661-e9fe-4549-9cd9-6f59f1a1b24e.zip" date="2025-12-23T02:22:42.902" /><!-- duration: 20ms -->
+    </step><!-- duration: 1759ms -->
+    <step title="Removing previous build artifact&apos;s manifest file" date="2025-12-23T02:22:44.448" >
+      <step title="Start deployment in the background" date="2025-12-23T02:22:44.532" >
+        <step title="Acquiring Deployment Lock" date="2025-12-23T02:22:44.884" /><!-- duration: 100ms -->
+        <step title="Acquired Deployment Lock" date="2025-12-23T02:22:45.757" /><!-- duration: 101ms -->
+      </step><!-- duration: 2041ms -->
+    </step><!-- duration: 2486ms -->
+    <step title="Outgoing response" date="2025-12-23T02:22:47.425" type="response" statusCode="202" statusText="Accepted" /><!-- duration: 21ms -->
+  </step><!-- duration: 5780ms -->

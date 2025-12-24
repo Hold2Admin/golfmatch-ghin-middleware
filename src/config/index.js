@@ -2,6 +2,11 @@
 // Configuration Loader
 // ============================================================
 
+// Note: Secrets are loaded from Key Vault via src/config/secrets.js
+// process.env is populated either by:
+// - Azure App Service (production) with Key Vault references
+// - loadSecrets() in development (Key Vault or .env.local fallback)
+
 module.exports = {
   // Server
   port: process.env.PORT || 5001,

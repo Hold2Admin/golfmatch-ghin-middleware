@@ -1,0 +1,9 @@
+<step title="Incoming Request" date="2025-12-23T02:22:52.229" instance="52038d" url="/api/deployments/latest" method="GET" type="request" pid="835,1,18" Accept="*/*" Host="golfmatch-ghin-middleware.scm.azurewebsites.net" User-Agent="AZURECLI/2.79.0 (MSI)" Accept-Encoding="gzip, deflate" Authorization="Bea..." x-ms-client-request-id="38ef2881-dfa6-11f0-ad6a-c8348e202cea" X-ARR-LOG-ID="38ef2881-dfa6-11f0-ad6a-c8348e202cea" CLIENT-IP="71.190.91.214:64996" X-SITE-DEPLOYMENT-ID="golfmatch-ghin-middleware" WAS-DEFAULT-HOSTNAME="golfmatch-ghin-middleware.scm.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/api/deployments/latest" X-Client-IP="71.190.91.214" X-Client-Port="64996" >
+  <step title="Cleanup Xml Logs" date="2025-12-23T02:22:52.289" /><!-- duration: 30ms -->
+  <step title="DeploymentService.GetResult" date="2025-12-23T02:22:53.523" >
+    <step title="DeploymentService.GetLatestDeployment" date="2025-12-23T02:22:53.544" >
+      <step title="DeploymentManager.GetResults" date="2025-12-23T02:22:53.663" /><!-- duration: 3965ms -->
+    </step><!-- duration: 4556ms -->
+  </step><!-- duration: 4619ms -->
+  <step title="Outgoing response" date="2025-12-23T02:23:01.406" type="response" statusCode="202" statusText="Accepted" /><!-- duration: 47ms -->
+</step><!-- duration: 9256ms -->

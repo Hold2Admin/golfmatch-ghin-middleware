@@ -1,0 +1,17 @@
+<step title="Incoming Request" date="2025-12-24T20:46:46.581" instance="637a66" url="/api/zipdeploy?isAsync=true&amp;deployer=GITHUB_ZIP_DEPLOY&amp;message=%7B%22type%22%3A%22deployment%22%2C%22sha%22%3A%22e193a37c355d69cbe220c2c21f9fa0b5aa1ef934%22%2C%22repoName%22%3A%22Hold2Admin%2Fgolfmatch-ghin-middleware%22%2C%22actor%22%3A%22Hold2Admin%22%2C%22slotName%22%3A%22production%22%2C%22commitMessage%22%3A%22Add%20database%20%26%20Redis%20services%3B%20enhance%20health%20checks%3B%20write%20integration%20tests%3B%20skip%20external%20connection%20attempts%20in%20test%20mode%22%7D" method="POST" type="request" pid="837,1,19" Host="golfmatch-ghin-middleware.scm.azurewebsites.net" User-Agent="GITHUBACTIONS_DeployWebAppToAzure_397774f9b6d6b08b1d68ed8652d51118e36f842952d37c896a08699b67916cd7" Authorization="Bas..." Content-Type="application/octet-stream" Cookie="ARRAffinity=637a66df3dfa3e1d7fb192e08cb54d1608456d98bd240b726eaf0785b9a05224;Path=/;HttpOnly;Secure;Domain=golfmatch-ghin-middleware.scm.azurewebsites.net; ARRAffinitySameSite=637a66df3dfa3e1d7fb192e08cb54d1608456d98bd240b726eaf0785b9a05224;Path=/;HttpOnly;SameSite=None;Secure;Domain=golfmatch-ghin-middleware.scm.azurewebsites.net" Transfer-Encoding="chunked" X-ARR-LOG-ID="e81d23f0-bb8c-4ddf-89e5-9362658b36b7" CLIENT-IP="20.161.44.181:10240" X-SITE-DEPLOYMENT-ID="golfmatch-ghin-middleware" WAS-DEFAULT-HOSTNAME="golfmatch-ghin-middleware.scm.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/api/zipdeploy?isAsync=true&amp;deployer=GITHUB_ZIP_DEPLOY&amp;message=%7B%22type%22%3A%22deployment%22%2C%22sha%22%3A%22e193a37c355d69cbe220c2c21f9fa0b5aa1ef934%22%2C%22repoName%22%3A%22Hold2Admin%2Fgolfmatch-ghin-middleware%22%2C%22actor%22%3A%22Hold2Admin%22%2C%22slotName%22%3A%22production%22%2C%22commitMessage%22%3A%22Add%20database%20%26%20Redis%20services%3B%20enhance%20health%20checks%3B%20write%20integration%20tests%3B%20skip%20external%20connection%20attempts%20in%20test%20mode%22%7D" X-Client-IP="20.161.44.181" X-Client-Port="10240" >
+  <step title="ZipPushDeploy" date="2025-12-24T20:46:46.910" >
+    <step title="ZipDeploy. Extract zip." date="2025-12-24T20:46:46.950" /><!-- duration: 43ms -->
+    <step title="None repository commit" date="2025-12-24T20:46:47.023" >
+      <step title="Commit id: 0d564959-a889-4dbc-9b07-9eef321acf68" date="2025-12-24T20:46:47.111" Message="N/A" AuthorName="N/A" AuthorEmail="N/A" /><!-- duration: 31ms -->
+    </step><!-- duration: 148ms -->
+    <step title="Starting PushDeployAsync" date="2025-12-24T20:46:47.202" /><!-- duration: 31ms -->
+    <step title="Writing artifact to /tmp/zipdeploy/6777b1de-8436-4891-a631-60a84820c061.zip" date="2025-12-24T20:46:47.522" >
+      <step title="Writing multipart request body to /tmp/zipdeploy/6777b1de-8436-4891-a631-60a84820c061.zip" date="2025-12-24T20:46:47.610" /><!-- duration: 39ms -->
+    </step><!-- duration: 388ms -->
+    <step title="Start deployment in the background" date="2025-12-24T20:46:48.142" >
+      <step title="Acquiring Deployment Lock" date="2025-12-24T20:46:48.322" /><!-- duration: 50ms -->
+      <step title="Acquired Deployment Lock" date="2025-12-24T20:46:48.662" /><!-- duration: 42ms -->
+    </step><!-- duration: 1104ms -->
+  </step><!-- duration: 2379ms -->
+  <step title="Outgoing response" date="2025-12-24T20:46:49.518" type="response" statusCode="202" statusText="Accepted" /><!-- duration: 10ms -->
+</step><!-- duration: 3035ms -->

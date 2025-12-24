@@ -1,0 +1,4 @@
+<step title="Incoming Request" date="2025-12-23T02:01:14.223" instance="52038d" url="/dump" method="GET" type="request" pid="835,1,24" Host="golfmatch-ghin-middleware.scm.azurewebsites.net" User-Agent="AZURECLI/2.79.0 (MSI)" Accept-Encoding="identity" Authorization="Bea..." x-ms-client-request-id="407c180e-dfa3-11f0-9eb0-c8348e202cea" X-ARR-LOG-ID="407c180e-dfa3-11f0-9eb0-c8348e202cea" CLIENT-IP="71.190.91.214:61505" X-SITE-DEPLOYMENT-ID="golfmatch-ghin-middleware" WAS-DEFAULT-HOSTNAME="golfmatch-ghin-middleware.scm.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/dump" X-Client-IP="71.190.91.214" X-Client-Port="61505" >
+  <step title="Cleanup Xml Logs" date="2025-12-23T02:01:14.229" /><!-- duration: 6ms -->
+  <step title="Outgoing response" date="2025-12-23T02:01:14.962" type="response" statusCode="200" statusText="OK" /><!-- duration: 4ms -->
+</step><!-- duration: 746ms -->

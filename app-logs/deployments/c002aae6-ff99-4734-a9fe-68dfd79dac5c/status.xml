@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>c002aae6-ff99-4734-a9fe-68dfd79dac5c</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"087d595ed7c378831e63a51f7d0c7a3ccdaf72fe","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Fix health checks: use setImmediate for async service init; disable Redis auto-reconnect; suppress Redis errors when not connected"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T21:46:53.7567869Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T21:46:43.6189769Z</receivedTime>
+  <startTime>2025-12-24T21:46:45.3999931Z</startTime>
+  <endTime>2025-12-24T21:46:53.7567869Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

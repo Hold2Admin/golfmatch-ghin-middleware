@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>dea6d2f8-5b9a-45f5-a990-9696356089ab</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"1c3ac9ec3da6f533c47d2a974ac8106ab3ab2d0a","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Upgrade dependencies: supertest@7, eslint@9, mssql@12; fix audit warnings; clean Jest config"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T20:34:38.1247926Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T20:34:29.4569479Z</receivedTime>
+  <startTime>2025-12-24T20:34:30.9435353Z</startTime>
+  <endTime>2025-12-24T20:34:38.1247926Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

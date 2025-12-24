@@ -2,8 +2,6 @@
 // GHIN Middleware API - Entry Point
 // ============================================================
 
-require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -16,9 +14,21 @@ const { addCorrelationId, trackRequestMetrics } = require('./middleware/tracking
 const { rateLimiter } = require('./middleware/rate-limit');
 const database = require('./services/database');
 const redis = require('./services/redis');
+const { loadSecrets } = require('./config/secrets');
 
-// Initialize Application Insights FIRST, before everything else
-initializeAppInsights();
+// Load secrets on startup (Key Vault or .env.local)
+(async () => {
+  try {
+    const secrets = await loadSecrets();
+    Object.assign(process.env, secrets);
+    console.log('✅ Secrets loaded');
+  } catch (error) {
+    console.warn('⚠️ Using process.env defaults:', error.message);
+  }
+  
+  // Initialize Application Insights after secrets are loaded
+  initializeAppInsights();
+})();
 
 const app = express();
 const logger = createLogger('app');

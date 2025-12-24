@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>62668360-c7d6-41b4-8488-0c2a393e5412</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"541441c9354cd8d3106e49a963debb2e8da15090","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"CI: Validate MSDeploy credentials only; ignore redacted FTP entries"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T19:59:49.2411592Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T19:58:32.3534026Z</receivedTime>
+  <startTime>2025-12-24T19:58:33.8144229Z</startTime>
+  <endTime>2025-12-24T19:59:49.2411592Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>2f37c74f-5f28-4aca-b224-98c31e729342</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"1110fc371d1bfb72d84d6ac81fd57a875649e326","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Fix health checks: use setImmediate for async service init; gracefully handle unconfigured services"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T21:43:31.6867395Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T21:43:21.0806708Z</receivedTime>
+  <startTime>2025-12-24T21:43:22.6225441Z</startTime>
+  <endTime>2025-12-24T21:43:31.6867395Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

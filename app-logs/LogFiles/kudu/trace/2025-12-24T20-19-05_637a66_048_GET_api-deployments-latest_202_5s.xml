@@ -1,0 +1,9 @@
+<step title="Incoming Request" date="2025-12-24T20:19:05.024" instance="637a66" url="/api/deployments/latest?deployer=GITHUB_ZIP_DEPLOY&amp;time=2025-12-24_20-18-41Z" method="GET" type="request" pid="835,1,25" Host="golfmatch-ghin-middleware.scm.azurewebsites.net" User-Agent="GITHUBACTIONS_DeployWebAppToAzure_397774f9b6d6b08b1d68ed8652d51118e36f842952d37c896a08699b67916cd7" Authorization="Bas..." Content-Type="application/json; charset=utf-8" Cookie="ARRAffinity=637a66df3dfa3e1d7fb192e08cb54d1608456d98bd240b726eaf0785b9a05224;Path=/;HttpOnly;Secure;Domain=golfmatch-ghin-middleware.scm.azurewebsites.net; ARRAffinitySameSite=637a66df3dfa3e1d7fb192e08cb54d1608456d98bd240b726eaf0785b9a05224;Path=/;HttpOnly;SameSite=None;Secure;Domain=golfmatch-ghin-middleware.scm.azurewebsites.net" Content-Length="0" X-ARR-LOG-ID="90acf778-027b-4525-827d-3c60c9cdec8a" CLIENT-IP="52.190.141.35:57344" X-SITE-DEPLOYMENT-ID="golfmatch-ghin-middleware" WAS-DEFAULT-HOSTNAME="golfmatch-ghin-middleware.scm.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/api/deployments/latest?deployer=GITHUB_ZIP_DEPLOY&amp;time=2025-12-24_20-18-41Z" X-Client-IP="52.190.141.35" X-Client-Port="57344" >
+  <step title="Cleanup Xml Logs" date="2025-12-24T20:19:05.035" /><!-- duration: 90ms -->
+  <step title="DeploymentService.GetResult" date="2025-12-24T20:19:05.269" >
+    <step title="DeploymentService.GetLatestDeployment" date="2025-12-24T20:19:05.366" >
+      <step title="DeploymentManager.GetResults" date="2025-12-24T20:19:05.771" /><!-- duration: 4271ms -->
+    </step><!-- duration: 4715ms -->
+  </step><!-- duration: 4896ms -->
+  <step title="Outgoing response" date="2025-12-24T20:19:10.264" type="response" statusCode="202" statusText="Accepted" /><!-- duration: 30ms -->
+</step><!-- duration: 5319ms -->

@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>3352a89f-ac09-40d5-8f8c-ee3c6ad62ff6</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"f5f3dfbe67bd59d2c8eccebcf3619e2957cff252","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Make App Insights check graceful - don't fail health if not initialized"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T21:51:58.6025469Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T21:51:34.443756Z</receivedTime>
+  <startTime>2025-12-24T21:51:37.6545786Z</startTime>
+  <endTime>2025-12-24T21:51:58.6025469Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

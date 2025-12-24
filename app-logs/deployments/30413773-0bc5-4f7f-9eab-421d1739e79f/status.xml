@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>30413773-0bc5-4f7f-9eab-421d1739e79f</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"f7911143d253eb473625c041e6052a138c784a84","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Remove duplicate wwwroot directory"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T20:19:21.343543Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T20:18:47.5993423Z</receivedTime>
+  <startTime>2025-12-24T20:18:50.6671618Z</startTime>
+  <endTime>2025-12-24T20:19:21.343543Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

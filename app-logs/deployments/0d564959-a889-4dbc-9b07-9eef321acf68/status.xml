@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>0d564959-a889-4dbc-9b07-9eef321acf68</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"e193a37c355d69cbe220c2c21f9fa0b5aa1ef934","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Add database &amp; Redis services; enhance health checks; write integration tests; skip external connection attempts in test mode"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T20:47:18.4369258Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T20:46:56.0155411Z</receivedTime>
+  <startTime>2025-12-24T20:46:58.5557339Z</startTime>
+  <endTime>2025-12-24T20:47:18.4369258Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>

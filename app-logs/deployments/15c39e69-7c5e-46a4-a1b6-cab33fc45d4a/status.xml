@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<deployment>
+  <id>15c39e69-7c5e-46a4-a1b6-cab33fc45d4a</id>
+  <author>N/A</author>
+  <deployer>GITHUB_ZIP_DEPLOY</deployer>
+  <authorEmail>N/A</authorEmail>
+  <message>{"type":"deployment","sha":"fa6a19e97dfe118d5bbebf10ee662a28469f6219","repoName":"Hold2Admin/golfmatch-ghin-middleware","actor":"Hold2Admin","slotName":"production","commitMessage":"Fix health check: treat not_configured services as healthy (optional dependencies)"}</message>
+  <progress></progress>
+  <status>Success</status>
+  <statusText></statusText>
+  <lastSuccessEndTime>2025-12-24T21:49:17.1710256Z</lastSuccessEndTime>
+  <receivedTime>2025-12-24T21:48:44.1645306Z</receivedTime>
+  <startTime>2025-12-24T21:48:51.0520934Z</startTime>
+  <endTime>2025-12-24T21:49:17.1710256Z</endTime>
+  <complete>True</complete>
+  <is_temp>False</is_temp>
+  <is_readonly>True</is_readonly>
+  <buildSummary />
+</deployment>
