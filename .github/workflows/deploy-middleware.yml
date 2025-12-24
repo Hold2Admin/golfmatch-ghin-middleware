@@ -29,48 +29,45 @@ jobs:
     - name: Run tests
       run: npm test --if-present
 
-    - name: Validate publish profile
-      shell: bash
-      env:
-        PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-      run: |
-        set -euo pipefail
-        # Write secret to file (masked in logs)
-        echo "$PUBLISH_PROFILE" > publish_profile.xml
-        python3 - <<'PY'
-        import xml.etree.ElementTree as ET
-        with open('publish_profile.xml','r') as f:
-            xml=f.read()
-        root=ET.fromstring(xml)
-        profiles=root.findall('publishProfile')
-        mm={p.get('publishMethod'):p for p in profiles}
-        ms=mm.get('MSDeploy')
-        zd=mm.get('ZipDeploy')
-        ms_site=len(ms.get('msdeploySite')) if ms is not None else 0
-        zd_url=len(zd.get('publishUrl')) if zd is not None else 0
-        print(f"PP check: msdeploySiteLen={ms_site} zipPublishUrlLen={zd_url}")
-        PY
-
-    - name: Extract app name from publish profile
+    - name: Parse publish profile
       id: ppmeta
       shell: bash
+      env:
+      PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
       run: |
-        set -euo pipefail
-        python3 - <<'PY'
-        import xml.etree.ElementTree as ET
-        with open('publish_profile.xml','r') as f:
-            xml=f.read()
+      set -euo pipefail
+      # Write secret to file (masked in logs)
+      echo "$PUBLISH_PROFILE" > publish_profile.xml
+      python3 - <<'PY'
+      import sys, xml.etree.ElementTree as ET
+      with open('publish_profile.xml','r') as f:
+        xml=f.read()
+      try:
         root=ET.fromstring(xml)
-        ms=None
-        for p in root.findall('publishProfile'):
-            if p.get('publishMethod')=='MSDeploy':
-                ms=p; break
-        appname = ms.get('msdeploySite') if ms is not None else ''
-        print('appname:', appname)
-        with open('/tmp/gout','w') as gout:
-            gout.write(f"app_name={appname}\n")
-        PY
-        cat /tmp/gout >> "$GITHUB_OUTPUT"
+      except Exception as e:
+        print('ERROR: Publish profile XML parse failed:', e)
+        sys.exit(1)
+      profiles=root.findall('publishProfile')
+      if not profiles:
+        print('ERROR: No publishProfile entries found in secret.')
+        sys.exit(1)
+      redacted = any((p.get('userName','').upper()=='REDACTED' or p.get('userPWD','').upper()=='REDACTED') for p in profiles)
+      if redacted:
+        print('ERROR: Publish profile credentials are REDACTED. Re-download from Azure Portal and paste full XML into secret.')
+        sys.exit(1)
+      ms = next((p for p in profiles if p.get('publishMethod')=='MSDeploy'), None)
+      if ms is None:
+        print('ERROR: MSDeploy profile not found in secret.')
+        sys.exit(1)
+      appname = ms.get('msdeploySite') or ''
+      if not appname:
+        print('ERROR: msdeploySite missing from publish profile.')
+        sys.exit(1)
+      print('Publish profile OK. App name from msdeploySite:', appname)
+      with open('/tmp/gout','w') as gout:
+        gout.write(f"app_name={appname}\n")
+      PY
+      cat /tmp/gout >> "$GITHUB_OUTPUT"
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       id: deploywebapp
@@ -78,40 +75,9 @@ jobs:
         app-name: ${{ steps.ppmeta.outputs.app_name }}
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
         package: .
-      continue-on-error: true
-
-    - name: Fallback Zip Deploy (if previous failed)
-      if: ${{ steps.deploywebapp.outcome != 'success' }}
-      shell: bash
-      env:
-        PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-      run: |
-        set -euo pipefail
-        # Build zip package excluding git and workflow directory
-        zip -rq deploy.zip . -x ".git/*" ".github/*"
-        # Extract ZipDeploy credentials from publish profile
-        python3 - <<'PY'
-        import xml.etree.ElementTree as ET, sys
-        with open('publish_profile.xml','r') as f:
-            xml=f.read()
-        root=ET.fromstring(xml)
-        zd=None
-        for p in root.findall('publishProfile'):
-            if p.get('publishMethod')=='ZipDeploy':
-                zd=p; break
-        if zd is None:
-            print('No ZipDeploy profile found'); sys.exit(1)
-        url=zd.get('publishUrl')
-        user=zd.get('userName')
-        pwd=zd.get('userPWD')
-        host=url.split(':')[0] if ':' in url else url
-        # Write a shell script to perform zipdeploy
-        with open('zipdeploy.sh','w') as sh:
-            sh.write(f"curl -fsS -u '{user}:{pwd}' -X POST --data-binary @deploy.zip https://{host}/api/zipdeploy\n")
-        PY
-        bash zipdeploy.sh
+      continue-on-error: false
 
     - name: Test deployment
       run: |
         sleep 30
-        curl -f https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/v1/health || exit 1
+        curl -f https://${{ steps.ppmeta.outputs.app_name }}.azurewebsites.net/api/v1/health || exit 1
