@@ -40,7 +40,31 @@ const logger = createLogger('app');
 // ============================================================
 
 app.use(helmet()); // Security headers
-app.use(cors()); // CORS for Fore Play API
+
+// CORS configuration - only allow golfmatch-api and local dev
+const corsOptions = {
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'https://golfmatch-api.azurewebsites.net',
+      'https://golfmatch-web.azurewebsites.net',
+      'http://localhost:3000',
+      'http://localhost:5000',
+      'http://localhost:5001'
+    ];
+    
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS not allowed'), false);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization'],
+  maxAge: 86400
+};
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' })); // Parse JSON bodies with size limit
 app.use(sanitizeHeaders); // Sanitize headers
 app.use(addCorrelationId); // Add correlation ID for request tracking
