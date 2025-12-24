@@ -33,41 +33,41 @@ jobs:
       id: ppmeta
       shell: bash
       env:
-      PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
       run: |
-      set -euo pipefail
-      # Write secret to file (masked in logs)
-      echo "$PUBLISH_PROFILE" > publish_profile.xml
-      python3 - <<'PY'
-      import sys, xml.etree.ElementTree as ET
-      with open('publish_profile.xml','r') as f:
-        xml=f.read()
-      try:
-        root=ET.fromstring(xml)
-      except Exception as e:
-        print('ERROR: Publish profile XML parse failed:', e)
-        sys.exit(1)
-      profiles=root.findall('publishProfile')
-      if not profiles:
-        print('ERROR: No publishProfile entries found in secret.')
-        sys.exit(1)
-      redacted = any((p.get('userName','').upper()=='REDACTED' or p.get('userPWD','').upper()=='REDACTED') for p in profiles)
-      if redacted:
-        print('ERROR: Publish profile credentials are REDACTED. Re-download from Azure Portal and paste full XML into secret.')
-        sys.exit(1)
-      ms = next((p for p in profiles if p.get('publishMethod')=='MSDeploy'), None)
-      if ms is None:
-        print('ERROR: MSDeploy profile not found in secret.')
-        sys.exit(1)
-      appname = ms.get('msdeploySite') or ''
-      if not appname:
-        print('ERROR: msdeploySite missing from publish profile.')
-        sys.exit(1)
-      print('Publish profile OK. App name from msdeploySite:', appname)
-      with open('/tmp/gout','w') as gout:
-        gout.write(f"app_name={appname}\n")
-      PY
-      cat /tmp/gout >> "$GITHUB_OUTPUT"
+        set -euo pipefail
+        # Write secret to file (masked in logs)
+        echo "$PUBLISH_PROFILE" > publish_profile.xml
+        python3 - <<'PY'
+        import sys, xml.etree.ElementTree as ET
+        with open('publish_profile.xml','r') as f:
+            xml=f.read()
+        try:
+            root=ET.fromstring(xml)
+        except Exception as e:
+            print('ERROR: Publish profile XML parse failed:', e)
+            sys.exit(1)
+        profiles=root.findall('publishProfile')
+        if not profiles:
+            print('ERROR: No publishProfile entries found in secret.')
+            sys.exit(1)
+        redacted = any((p.get('userName','').upper()=='REDACTED' or p.get('userPWD','').upper()=='REDACTED') for p in profiles)
+        if redacted:
+            print('ERROR: Publish profile credentials are REDACTED. Re-download from Azure Portal and paste full XML into secret.')
+            sys.exit(1)
+        ms = next((p for p in profiles if p.get('publishMethod')=='MSDeploy'), None)
+        if ms is None:
+            print('ERROR: MSDeploy profile not found in secret.')
+            sys.exit(1)
+        appname = ms.get('msdeploySite') or ''
+        if not appname:
+            print('ERROR: msdeploySite missing from publish profile.')
+            sys.exit(1)
+        print('Publish profile OK. App name from msdeploySite:', appname)
+        with open('/tmp/gout','w') as gout:
+            gout.write(f"app_name={appname}\n")
+        PY
+        cat /tmp/gout >> "$GITHUB_OUTPUT"
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       id: deploywebapp
