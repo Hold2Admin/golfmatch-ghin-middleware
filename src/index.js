@@ -104,14 +104,14 @@ app.use((err, req, res, next) => {
 
 const PORT = config.port;
 
-// Initialize optional services (skip in test mode)
+// Lazy-initialize optional services in background (don't block startup)
 if (process.env.NODE_ENV !== 'test') {
-  (async () => {
+  setImmediate(async () => {
     if (config.db.server) {
       try {
         await database.connect();
       } catch (error) {
-        logger.warn('Database connection failed, continuing without DB', { error: error.message });
+        logger.warn('Database connection failed in background', { error: error.message });
       }
     }
 
@@ -119,10 +119,10 @@ if (process.env.NODE_ENV !== 'test') {
       try {
         await redis.connect();
       } catch (error) {
-        logger.warn('Redis connection failed, continuing without cache', { error: error.message });
+        logger.warn('Redis connection failed in background', { error: error.message });
       }
     }
-  })();
+  });
 }
 
 // Only start server if not in test mode

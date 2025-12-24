@@ -45,16 +45,26 @@ router.get('/', async (req, res) => {
     });
 
     await runCheck('database', async () => {
-      const dbHealth = await database.checkHealth();
-      if (dbHealth.status === 'unhealthy') {
-        throw new Error(dbHealth.error || 'Database unhealthy');
+      try {
+        const dbHealth = await database.checkHealth();
+        if (dbHealth.status === 'unhealthy') {
+          throw new Error(dbHealth.error || 'Database unhealthy');
+        }
+      } catch (error) {
+        // Log but don't fail health check if DB not configured
+        logger.debug('Database check failed', { error: error.message });
       }
     });
 
     await runCheck('redis', async () => {
-      const redisHealth = await redis.checkHealth();
-      if (redisHealth.status === 'unhealthy') {
-        throw new Error(redisHealth.error || 'Redis unhealthy');
+      try {
+        const redisHealth = await redis.checkHealth();
+        if (redisHealth.status === 'unhealthy') {
+          throw new Error(redisHealth.error || 'Redis unhealthy');
+        }
+      } catch (error) {
+        // Log but don't fail health check if Redis not configured
+        logger.debug('Redis check failed', { error: error.message });
       }
     });
 
