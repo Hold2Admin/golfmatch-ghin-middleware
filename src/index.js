@@ -48,9 +48,9 @@ const corsOptions = {
       'https://golfmatch-api.azurewebsites.net',
       'https://api.golfmatch.claytoncobb.com',
       'https://golfmatch-web.azurewebsites.net',
-      'http://localhost:3000',
       'http://localhost:5000',
-      'http://localhost:5001'
+      'http://localhost:5001',
+      'http://localhost:5173'
     ];
     
     if (!origin || allowedOrigins.includes(origin)) {
