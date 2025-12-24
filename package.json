@@ -45,9 +45,14 @@
     "node": ">=20.0.0"
   },
   "jest": {
-    "testPathIgnorePatterns": [
-      "<rootDir>/node_modules/",
+    "roots": [
+      "<rootDir>/src"
+    ],
+    "modulePathIgnorePatterns": [
       "<rootDir>/wwwroot/"
+    ],
+    "testPathIgnorePatterns": [
+      "<rootDir>/node_modules/"
     ]
   }
 }
