@@ -144,6 +144,7 @@ The `.env.local` file has placeholder values. Update these as you progress:
 - ✅ PORT, NODE_ENV (already set)
 - ⏳ Database (when you create Azure SQL)
 - ⏳ Redis (optional for now)
+- ✅ APPLICATIONINSIGHTS_CONNECTION_STRING (copy from golfmatch-insights to remove SDK deprecation warning)
 
 **Later (Production)**:
 - ⏳ GHIN API credentials (when access granted)

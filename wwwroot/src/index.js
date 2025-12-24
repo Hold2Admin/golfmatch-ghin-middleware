@@ -2,22 +2,11 @@
 // GHIN Middleware API - Entry Point
 // ============================================================
 
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env.local') });
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const { createLogger } = require('./utils/logger');
-const { initializeAppInsights, trackEvent } = require('./utils/appinsights');
 const config = require('./config');
-const { conditionalAuth } = require('./middleware/auth');
-const { validateRequest, sanitizeHeaders } = require('./middleware/validation');
-const { addCorrelationId, trackRequestMetrics } = require('./middleware/tracking');
-const { rateLimiter } = require('./middleware/rate-limit');
-
-// Initialize Application Insights FIRST, before everything else
-initializeAppInsights();
 
 const app = express();
 const logger = createLogger('app');
@@ -28,13 +17,7 @@ const logger = createLogger('app');
 
 app.use(helmet()); // Security headers
 app.use(cors()); // CORS for Fore Play API
-app.use(express.json({ limit: '10mb' })); // Parse JSON bodies with size limit
-app.use(sanitizeHeaders); // Sanitize headers
-app.use(addCorrelationId); // Add correlation ID for request tracking
-app.use(trackRequestMetrics); // Track request metrics and timing
-app.use(validateRequest); // Validate request structure
-app.use(conditionalAuth); // API Key authentication (except /health and /)
-app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
+app.use(express.json()); // Parse JSON bodies
 
 // Request logging
 app.use((req, res, next) => {
@@ -106,13 +89,6 @@ app.listen(PORT, () => {
   logger.info(`GHIN Middleware API listening on port ${PORT}`);
   logger.info(`Environment: ${config.env}`);
   logger.info(`GHIN API Mode: ${config.ghin.useMock ? 'MOCK' : 'LIVE'}`);
-  
-  // Track startup event
-  trackEvent('ApplicationStartup', {
-    port: PORT.toString(),
-    environment: config.env,
-    ghinMode: config.ghin.useMock ? 'MOCK' : 'LIVE'
-  });
 });
 
 module.exports = app;

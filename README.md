@@ -118,6 +118,9 @@ See `.github/workflows/deploy-middleware.yml` for CI/CD pipeline.
 
 See `.env.example` for full list of required environment variables.
 
+Key settings:
+- `APPLICATIONINSIGHTS_CONNECTION_STRING` (preferred) or `APPINSIGHTS_INSTRUMENTATIONKEY` for telemetry
+
 Critical secrets stored in Azure Key Vault:
 - Database passwords
 - GHIN API credentials
@@ -126,7 +129,7 @@ Critical secrets stored in Azure Key Vault:
 
 ## Monitoring
 
-- **Application Insights**: `golfmatch-middleware-insights`
+- **Application Insights**: `golfmatch-insights` (set `APPLICATIONINSIGHTS_CONNECTION_STRING`)
 - **Logs**: Azure App Service logs
 - **Metrics**: Request rate, cache hit rate, error rate, latency
 

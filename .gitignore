@@ -32,6 +32,13 @@ build/
 
 # Azure
 .azure/
+*.zip
+publishProfile.xml
+publishProfile.json
+logs_temp/
+logs_temp2/
+app-logs*.zip
+webapp_logs.zip
 
 # Temp files
 *.tmp
