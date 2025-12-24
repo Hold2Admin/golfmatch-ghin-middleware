@@ -39,8 +39,9 @@ router.get('/', async (req, res) => {
 
     await runCheck('appInsights', async () => {
       const client = getClient();
+      // App Insights is optional - don't fail if not configured
       if (!client) {
-        throw new Error('Application Insights client not initialized');
+        logger.debug('Application Insights not configured');
       }
     });
 
