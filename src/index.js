@@ -15,6 +15,8 @@ const { conditionalAuth } = require('./middleware/auth');
 const { validateRequest, sanitizeHeaders } = require('./middleware/validation');
 const { addCorrelationId, trackRequestMetrics } = require('./middleware/tracking');
 const { rateLimiter } = require('./middleware/rate-limit');
+const database = require('./services/database');
+const redis = require('./services/redis');
 
 // Initialize Application Insights FIRST, before everything else
 initializeAppInsights();
@@ -102,17 +104,41 @@ app.use((err, req, res, next) => {
 
 const PORT = config.port;
 
-app.listen(PORT, () => {
-  logger.info(`GHIN Middleware API listening on port ${PORT}`);
-  logger.info(`Environment: ${config.env}`);
-  logger.info(`GHIN API Mode: ${config.ghin.useMock ? 'MOCK' : 'LIVE'}`);
-  
-  // Track startup event
-  trackEvent('ApplicationStartup', {
-    port: PORT.toString(),
-    environment: config.env,
-    ghinMode: config.ghin.useMock ? 'MOCK' : 'LIVE'
+// Initialize optional services (skip in test mode)
+if (process.env.NODE_ENV !== 'test') {
+  (async () => {
+    if (config.db.server) {
+      try {
+        await database.connect();
+      } catch (error) {
+        logger.warn('Database connection failed, continuing without DB', { error: error.message });
+      }
+    }
+
+    if (config.redis.host) {
+      try {
+        await redis.connect();
+      } catch (error) {
+        logger.warn('Redis connection failed, continuing without cache', { error: error.message });
+      }
+    }
+  })();
+}
+
+// Only start server if not in test mode
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    logger.info(`GHIN Middleware API listening on port ${PORT}`);
+    logger.info(`Environment: ${config.env}`);
+    logger.info(`GHIN API Mode: ${config.ghin.useMock ? 'MOCK' : 'LIVE'}`);
+    
+    // Track startup event
+    trackEvent('ApplicationStartup', {
+      port: PORT.toString(),
+      environment: config.env,
+      ghinMode: config.ghin.useMock ? 'MOCK' : 'LIVE'
+    });
   });
-});
+}
 
 module.exports = app;

@@ -7,6 +7,8 @@ const router = express.Router();
 const { createLogger } = require('../utils/logger');
 const config = require('../config');
 const { getClient } = require('../utils/appinsights');
+const database = require('../services/database');
+const redis = require('../services/redis');
 
 const logger = createLogger('health');
 
@@ -39,6 +41,20 @@ router.get('/', async (req, res) => {
       const client = getClient();
       if (!client) {
         throw new Error('Application Insights client not initialized');
+      }
+    });
+
+    await runCheck('database', async () => {
+      const dbHealth = await database.checkHealth();
+      if (dbHealth.status === 'unhealthy') {
+        throw new Error(dbHealth.error || 'Database unhealthy');
+      }
+    });
+
+    await runCheck('redis', async () => {
+      const redisHealth = await redis.checkHealth();
+      if (redisHealth.status === 'unhealthy') {
+        throw new Error(redisHealth.error || 'Redis unhealthy');
       }
     });
 
