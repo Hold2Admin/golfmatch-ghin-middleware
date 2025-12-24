@@ -22,12 +22,28 @@ jobs:
       uses: actions/setup-node@v3
       with:
         node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: 'package-lock.json'
 
     - name: Install dependencies
       run: npm ci
 
     - name: Run tests
       run: npm test --if-present
+
+    - name: Create deployment package
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Creating minimal deploy.zip (excluding wwwroot, logs, coverage)"
+        rm -f deploy.zip
+        zip -r deploy.zip \
+          src \
+          package.json \
+          package-lock.json \
+          README.md \
+          GETTING-STARTED.md \
+          -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**"
 
     - name: Parse publish profile
       id: ppmeta
@@ -76,10 +92,25 @@ jobs:
       with:
         app-name: ${{ steps.ppmeta.outputs.app_name }}
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: .
+        package: deploy.zip
       continue-on-error: false
 
-    - name: Test deployment
+    - name: Test deployment (retry until healthy)
+      shell: bash
       run: |
-        sleep 30
-        curl -f https://${{ steps.ppmeta.outputs.app_name }}.azurewebsites.net/api/v1/health || exit 1
+        set -euo pipefail
+        APP_URL="https://${{ steps.ppmeta.outputs.app_name }}.azurewebsites.net/api/v1/health"
+        echo "Checking health at $APP_URL"
+        attempts=30
+        delay=10
+        for i in $(seq 1 $attempts); do
+          if curl -fsSL "$APP_URL" | tee health.json | grep -q '"status":"healthy"'; then
+            echo "Health check passed on attempt $i"
+            exit 0
+          fi
+          echo "Attempt $i failed; waiting $delay seconds..."
+          sleep $delay
+        done
+        echo "Health check did not pass after $attempts attempts"
+        echo "Last response:" && cat health.json || true
+        exit 1
