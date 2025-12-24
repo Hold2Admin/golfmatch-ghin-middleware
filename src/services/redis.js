@@ -30,7 +30,8 @@ async function connect() {
         host: config.redis.host,
         port: config.redis.port,
         tls: config.redis.tls,
-        connectTimeout: config.redis.connectTimeout
+        connectTimeout: config.redis.connectTimeout,
+        reconnectStrategy: false // Don't auto-reconnect
       }
     };
 
@@ -41,7 +42,10 @@ async function connect() {
     client = redis.createClient(redisConfig);
 
     client.on('error', (err) => {
-      logger.error('Redis client error', { error: err.message });
+      // Suppress errors if not connected (likely config issue)
+      if (isConnected) {
+        logger.error('Redis client error', { error: err.message });
+      }
       isConnected = false;
     });
 
