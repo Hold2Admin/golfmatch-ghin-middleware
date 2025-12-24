@@ -49,16 +49,18 @@ jobs:
             sys.exit(1)
         profiles=root.findall('publishProfile')
         if not profiles:
-            print('ERROR: No publishProfile entries found in secret.')
-            sys.exit(1)
-        redacted = any((p.get('userName','').upper()=='REDACTED' or p.get('userPWD','').upper()=='REDACTED') for p in profiles)
-        if redacted:
-            print('ERROR: Publish profile credentials are REDACTED. Re-download from Azure Portal and paste full XML into secret.')
-            sys.exit(1)
+          print('ERROR: No publishProfile entries found in secret.')
+          sys.exit(1)
         ms = next((p for p in profiles if p.get('publishMethod')=='MSDeploy'), None)
         if ms is None:
             print('ERROR: MSDeploy profile not found in secret.')
             sys.exit(1)
+        # Validate MSDeploy credentials only; other profiles (e.g., FTP) may be redacted
+        ms_user = (ms.get('userName') or '').strip()
+        ms_pwd = (ms.get('userPWD') or '').strip()
+        if not ms_user or not ms_pwd or ms_user.upper()=='REDACTED' or ms_pwd.upper()=='REDACTED':
+          print('ERROR: MSDeploy credentials are missing or REDACTED. Re-download publish profile from Azure Portal and paste full XML into secret.')
+          sys.exit(1)
         appname = ms.get('msdeploySite') or ''
         if not appname:
             print('ERROR: msdeploySite missing from publish profile.')
