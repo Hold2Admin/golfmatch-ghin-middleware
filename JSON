@@ -1,0 +1,1 @@
+{"status":"healthy","timestamp":"2025-12-24T23:03:05.316Z","uptime":214.817704489,"environment":"production","ghinApiMode":"MOCK","version":"1.0.0","checks":[{"name":"app","status":"healthy","durationMs":7},{"name":"appInsights","status":"healthy","durationMs":0},{"name":"database","status":"healthy","durationMs":0},{"name":"redis","status":"healthy","durationMs":863}]}

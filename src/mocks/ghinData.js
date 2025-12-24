@@ -9,7 +9,7 @@ const MOCK_PLAYERS = {
     firstName: 'Clayton',
     lastName: 'Cobb',
     email: 'clayton@example.com',
-    clubName: 'Indian Hills Country Club',
+    clubName: 'Cedar Ridge Golf Club',
     clubId: '12345',
     associationId: 'MGA',
     handicapIndex: '9.4',
@@ -52,9 +52,9 @@ const MOCK_PLAYERS = {
 const MOCK_COURSES = {
   'GHIN-54321': {
     courseId: 'GHIN-54321',
-    courseName: 'Indian Hills Country Club',
-    city: 'Fort Salonga',
-    state: 'NY',
+    courseName: 'Cedar Ridge Golf Club',
+    city: 'Boulder',
+    state: 'CO',
     country: 'USA',
     facilityId: 'GHIN-FAC-9876',
     tees: [

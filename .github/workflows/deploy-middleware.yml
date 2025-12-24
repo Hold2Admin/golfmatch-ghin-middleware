@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      run_health_check:
+        description: 'Run post-deploy health check (may be blocked by IP restrictions)'
+        required: false
+        default: false
+        type: boolean
 
 env:
   AZURE_WEBAPP_NAME: golfmatch-ghin-middleware
@@ -96,6 +102,7 @@ jobs:
       continue-on-error: false
 
     - name: Test deployment (retry until healthy)
+      if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_health_check == true }}
       shell: bash
       run: |
         set -euo pipefail
