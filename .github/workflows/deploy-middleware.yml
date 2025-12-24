@@ -29,12 +29,67 @@ jobs:
     - name: Run tests
       run: npm test --if-present
 
+    - name: Validate publish profile
+      shell: bash
+      env:
+        PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+      run: |
+        set -euo pipefail
+        # Write secret to file (masked in logs)
+        echo "$PUBLISH_PROFILE" > publish_profile.xml
+        python3 - <<'PY'
+        import xml.etree.ElementTree as ET
+        with open('publish_profile.xml','r') as f:
+            xml=f.read()
+        root=ET.fromstring(xml)
+        profiles=root.findall('publishProfile')
+        mm={p.get('publishMethod'):p for p in profiles}
+        ms=mm.get('MSDeploy')
+        zd=mm.get('ZipDeploy')
+        ms_site=len(ms.get('msdeploySite')) if ms is not None else 0
+        zd_url=len(zd.get('publishUrl')) if zd is not None else 0
+        print(f"PP check: msdeploySiteLen={ms_site} zipPublishUrlLen={zd_url}")
+        PY
+
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
+      id: deploywebapp
       with:
         app-name: ${{ env.AZURE_WEBAPP_NAME }}
         publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
         package: .
+      continue-on-error: true
+
+    - name: Fallback Zip Deploy (if previous failed)
+      if: ${{ steps.deploywebapp.outcome != 'success' }}
+      shell: bash
+      env:
+        PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+      run: |
+        set -euo pipefail
+        # Build zip package excluding git and workflow directory
+        zip -rq deploy.zip . -x ".git/*" ".github/*"
+        # Extract ZipDeploy credentials from publish profile
+        python3 - <<'PY'
+        import xml.etree.ElementTree as ET, sys
+        with open('publish_profile.xml','r') as f:
+            xml=f.read()
+        root=ET.fromstring(xml)
+        zd=None
+        for p in root.findall('publishProfile'):
+            if p.get('publishMethod')=='ZipDeploy':
+                zd=p; break
+        if zd is None:
+            print('No ZipDeploy profile found'); sys.exit(1)
+        url=zd.get('publishUrl')
+        user=zd.get('userName')
+        pwd=zd.get('userPWD')
+        host=url.split(':')[0] if ':' in url else url
+        # Write a shell script to perform zipdeploy
+        with open('zipdeploy.sh','w') as sh:
+            sh.write(f"curl -fsS -u '{user}:{pwd}' -X POST --data-binary @deploy.zip https://{host}/api/zipdeploy\n")
+        PY
+        bash zipdeploy.sh
 
     - name: Test deployment
       run: |
