@@ -46,6 +46,7 @@ const corsOptions = {
   origin: (origin, callback) => {
     const allowedOrigins = [
       'https://golfmatch-api.azurewebsites.net',
+      'https://api.golfmatch.claytoncobb.com',
       'https://golfmatch-web.azurewebsites.net',
       'http://localhost:3000',
       'http://localhost:5000',
