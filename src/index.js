@@ -16,19 +16,21 @@ const database = require('./services/database');
 const redis = require('./services/redis');
 const { loadSecrets } = require('./config/secrets');
 
-// Load secrets on startup (Key Vault or .env.local)
-(async () => {
-  try {
-    const secrets = await loadSecrets();
-    Object.assign(process.env, secrets);
-    console.log('✅ Secrets loaded');
-  } catch (error) {
-    console.warn('⚠️ Using process.env defaults:', error.message);
-  }
-  
-  // Initialize Application Insights after secrets are loaded
-  initializeAppInsights();
-})();
+// Load secrets on startup (Key Vault or .env.local) - skip in test environment
+if (process.env.NODE_ENV !== 'test') {
+  (async () => {
+    try {
+      const secrets = await loadSecrets();
+      Object.assign(process.env, secrets);
+      console.log('✅ Secrets loaded');
+    } catch (error) {
+      console.warn('⚠️ Using process.env defaults:', error.message);
+    }
+    
+    // Initialize Application Insights after secrets are loaded
+    initializeAppInsights();
+  })();
+}
 
 const app = express();
 const logger = createLogger('app');
