@@ -48,6 +48,7 @@
     "roots": [
       "<rootDir>/src"
     ],
+    "passWithNoTests": true,
     "modulePathIgnorePatterns": [
       "<rootDir>/wwwroot/"
     ],
