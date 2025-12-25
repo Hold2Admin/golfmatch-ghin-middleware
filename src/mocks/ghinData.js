@@ -62,6 +62,7 @@ const MOCK_COURSES = {
         teeId: 'GHIN-TEE-1001',
         teeName: 'Blue',
         gender: 'M',
+        isDefault: true,
         courseRating: 71.4,
         slope: 136,
         par: 72,
@@ -91,6 +92,7 @@ const MOCK_COURSES = {
         teeId: 'GHIN-TEE-1002',
         teeName: 'Blue',
         gender: 'W',
+        isDefault: true,
         courseRating: 70.1,
         slope: 125,
         par: 72,
@@ -143,6 +145,35 @@ const MOCK_COURSES = {
           { holeNumber: 16, par: 4, handicap: 16, yardage: 278 },
           { holeNumber: 17, par: 4, handicap: 2, yardage: 389 },
           { holeNumber: 18, par: 5, handicap: 4, yardage: 487 }
+        ]
+      },
+      {
+        teeId: 'GHIN-TEE-1004',
+        teeName: 'White',
+        gender: 'W',
+        courseRating: 68.3,
+        slope: 120,
+        par: 72,
+        yardage: 5450,
+        holes: [
+          { holeNumber: 1, par: 4, handicap: 9, yardage: 330 },
+          { holeNumber: 2, par: 4, handicap: 3, yardage: 360 },
+          { holeNumber: 3, par: 4, handicap: 15, yardage: 280 },
+          { holeNumber: 4, par: 3, handicap: 11, yardage: 130 },
+          { holeNumber: 5, par: 5, handicap: 1, yardage: 430 },
+          { holeNumber: 6, par: 4, handicap: 17, yardage: 240 },
+          { holeNumber: 7, par: 3, handicap: 13, yardage: 120 },
+          { holeNumber: 8, par: 4, handicap: 7, yardage: 270 },
+          { holeNumber: 9, par: 5, handicap: 5, yardage: 410 },
+          { holeNumber: 10, par: 4, handicap: 8, yardage: 330 },
+          { holeNumber: 11, par: 4, handicap: 12, yardage: 300 },
+          { holeNumber: 12, par: 3, handicap: 14, yardage: 110 },
+          { holeNumber: 13, par: 4, handicap: 10, yardage: 310 },
+          { holeNumber: 14, par: 5, handicap: 6, yardage: 420 },
+          { holeNumber: 15, par: 3, handicap: 18, yardage: 105 },
+          { holeNumber: 16, par: 4, handicap: 16, yardage: 235 },
+          { holeNumber: 17, par: 4, handicap: 2, yardage: 350 },
+          { holeNumber: 18, par: 5, handicap: 4, yardage: 445 }
         ]
       }
     ]

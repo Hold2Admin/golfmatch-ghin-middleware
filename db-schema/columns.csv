@@ -1,0 +1,7 @@
+TABLE_SCHEMA,TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION,DATA_TYPE,CHARACTER_MAXIMUM_LENGTH,IS_NULLABLE
+sys,database_firewall_rules,id,1,int,,NO
+sys,database_firewall_rules,name,2,nvarchar,128,NO
+sys,database_firewall_rules,start_ip_address,3,varchar,45,NO
+sys,database_firewall_rules,end_ip_address,4,varchar,45,NO
+sys,database_firewall_rules,create_date,5,datetime,,NO
+sys,database_firewall_rules,modify_date,6,datetime,,NO

@@ -1,0 +1,12 @@
+schema_name,proc_name
+dbo,usp_AddTeeForCourseWithRatings
+dbo,usp_ApplyHoleDefaultsToAllTeesByGender
+dbo,usp_CreateCourseWithDefaults
+dbo,usp_CreateHoleDefaults
+dbo,usp_DeleteCourseAllData
+dbo,usp_EnforceTeeGenderSuffix
+dbo,usp_GetCoursesDelta
+dbo,usp_GetEffectiveHoleData
+dbo,usp_ReplaceHoleDefaultsByGender
+dbo,usp_RunFullTeeCleanup
+dbo,usp_UpsertTeeHoleOverridesFromString

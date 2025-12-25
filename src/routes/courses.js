@@ -7,7 +7,7 @@ const router = express.Router();
 const { param, body, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const ghinClient = require('../services/ghinClient');
-const { transformGhinCourse } = require('../services/transformers/courseTransformer');
+const { transformGhinCourse, transformGhinTee, transformGhinHole } = require('../services/transformers/courseTransformer');
 
 const logger = createLogger('courses');
 
@@ -193,6 +193,132 @@ router.post(
           message: 'Failed to import course',
           retryable: true
         }
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/v1/courses/state/:state
+ * Lightweight listing of courses by state (preview format)
+ */
+router.get(
+  '/state/:state',
+  [
+    param('state').isString().trim().isLength({ min: 2, max: 50 }).withMessage('Invalid state')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: { code: 'INVALID_REQUEST', message: 'Invalid state', details: errors.array() }
+      });
+    }
+    const { state } = req.params;
+    try {
+      logger.info('Listing courses by state', { state });
+      const results = await ghinClient.searchCourses({ state });
+      res.json({ results, totalResults: results.length });
+    } catch (error) {
+      logger.error('State course list error', { error: error.message });
+      res.status(502).json({
+        error: { code: 'GHIN_API_ERROR', message: 'Failed to list courses', retryable: true }
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/v1/courses/:ghinCourseId/tees
+ * Return normalized tees for a course
+ */
+router.get(
+  '/:ghinCourseId/tees',
+  [
+    param('ghinCourseId').isString().trim().isLength({ min: 1, max: 100 })
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: { code: 'INVALID_REQUEST', message: 'Invalid course ID', details: errors.array() }
+      });
+    }
+    const { ghinCourseId } = req.params;
+    try {
+      const ghinCourse = await ghinClient.getCourse(ghinCourseId);
+      if (!ghinCourse) {
+        return res.status(404).json({
+          error: { code: 'GHIN_COURSE_NOT_FOUND', message: `Course ${ghinCourseId} not found` }
+        });
+      }
+      const tees = (ghinCourse.tees || []).map(transformGhinTee).map((t) => ({
+        ghinTeeId: t.ghinTeeId,
+        teeName: t.teeName,
+        gender: t.gender,
+        courseRating: t.courseRating,
+        slope: t.slope,
+        par: t.par,
+        yardage: t.yardage || null,
+        isDefault: Boolean(ghinCourse.tees.find((x) => x.teeId === t.ghinTeeId)?.isDefault)
+      }));
+      res.json({ courseId: ghinCourseId, tees });
+    } catch (error) {
+      logger.error('Fetch tees error', { ghinCourseId, error: error.message });
+      res.status(502).json({
+        error: { code: 'GHIN_API_ERROR', message: 'Failed to fetch tees', retryable: true }
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/v1/courses/:ghinCourseId/holes?teeId=...&gender=...
+ * Return 18-hole par/handicap for a tee+gender
+ */
+router.get(
+  '/:ghinCourseId/holes',
+  [
+    param('ghinCourseId').isString().trim().isLength({ min: 1, max: 100 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: { code: 'INVALID_REQUEST', message: 'Invalid course ID', details: errors.array() }
+      });
+    }
+    const { ghinCourseId } = req.params;
+    const { teeId, gender } = req.query;
+    if (!teeId || !gender) {
+      return res.status(400).json({
+        error: { code: 'INVALID_REQUEST', message: 'teeId and gender are required' }
+      });
+    }
+    try {
+      const ghinCourse = await ghinClient.getCourse(ghinCourseId);
+      if (!ghinCourse) {
+        return res.status(404).json({
+          error: { code: 'GHIN_COURSE_NOT_FOUND', message: `Course ${ghinCourseId} not found` }
+        });
+      }
+      const tee = (ghinCourse.tees || []).find((t) => String(t.teeId) === String(teeId) && String(t.gender).toUpperCase() === String(gender).toUpperCase());
+      if (!tee) {
+        return res.status(404).json({
+          error: { code: 'TEE_NOT_FOUND', message: `Tee ${teeId} (${gender}) not found` }
+        });
+      }
+      const holes = (tee.holes || []).map(transformGhinHole);
+      if (holes.length !== 18) {
+        return res.status(422).json({
+          error: { code: 'INVALID_BASELINE', message: 'Expected 18 holes' }
+        });
+      }
+      res.json({ courseId: ghinCourseId, teeId, gender: String(gender).toUpperCase(), holes });
+    } catch (error) {
+      logger.error('Fetch holes error', { ghinCourseId, error: error.message });
+      res.status(502).json({
+        error: { code: 'GHIN_API_ERROR', message: 'Failed to fetch holes', retryable: true }
       });
     }
   }

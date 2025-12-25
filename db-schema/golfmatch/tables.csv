@@ -1,0 +1,14 @@
+schema_name,table_name
+dbo,Bets
+dbo,CourseDefaults
+dbo,Courses
+dbo,HoleDefaults
+dbo,HoleOverrides
+dbo,Invitations
+dbo,LiveCardPlayers
+dbo,LiveCards
+dbo,LiveGames
+dbo,LiveScores
+dbo,LiveTotals
+dbo,TeeRatings
+dbo,Tees

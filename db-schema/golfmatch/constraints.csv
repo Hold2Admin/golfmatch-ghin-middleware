@@ -1,0 +1,45 @@
+TABLE_SCHEMA,TABLE_NAME,CONSTRAINT_NAME,CONSTRAINT_TYPE
+dbo,Bets,CK_Bets_Amount,CHECK
+dbo,Bets,CK_Bets_Scope,CHECK
+dbo,Bets,FK_Bets_Card,FOREIGN KEY
+dbo,Bets,FK_Bets_Game,FOREIGN KEY
+dbo,Bets,PK__Bets__454024A91FB612CC,PRIMARY KEY
+dbo,CourseDefaults,CK__CourseDef__Gende__634EBE90,CHECK
+dbo,CourseDefaults,FK_CourseDefaults_Course,FOREIGN KEY
+dbo,CourseDefaults,FK_CourseDefaults_Tee,FOREIGN KEY
+dbo,CourseDefaults,PK_CourseDefaults,PRIMARY KEY
+dbo,Courses,PK__Courses__C92D71874200C325,PRIMARY KEY
+dbo,HoleDefaults,CK__HoleDefau__Handi__6DCC4D03,CHECK
+dbo,HoleDefaults,CK__HoleDefau__HoleN__6BE40491,CHECK
+dbo,HoleDefaults,CK_HoleDefaults_Gender,CHECK
+dbo,HoleDefaults,CK_HoleDefaults_Par_Range,CHECK
+dbo,HoleDefaults,FK_HoleDefaults_Tee,FOREIGN KEY
+dbo,HoleDefaults,PK_HoleDefaults,PRIMARY KEY
+dbo,HoleOverrides,CK__HoleOverr__Handi__73852659,CHECK
+dbo,HoleOverrides,CK__HoleOverr__HoleN__719CDDE7,CHECK
+dbo,HoleOverrides,CK_HoleOverrides_Gender,CHECK
+dbo,HoleOverrides,CK_HoleOverrides_Par_Range,CHECK
+dbo,HoleOverrides,FK_HoleOverrides_Tee,FOREIGN KEY
+dbo,HoleOverrides,PK_HoleOverrides,PRIMARY KEY
+dbo,Invitations,FK_Invitations_Card,FOREIGN KEY
+dbo,Invitations,FK_Invitations_Game,FOREIGN KEY
+dbo,Invitations,PK__Invitati__033C8D2F98F5E58D,PRIMARY KEY
+dbo,Invitations,UQ__Invitati__A25C5AA77A2E33D4,UNIQUE
+dbo,LiveCardPlayers,PK_LiveCardPlayers,PRIMARY KEY
+dbo,LiveCards,FK_LiveCards_Game,FOREIGN KEY
+dbo,LiveCards,PK__LiveCard__55FECD8EF6B28089,PRIMARY KEY
+dbo,LiveGames,FK_LiveGames_Course,FOREIGN KEY
+dbo,LiveGames,FK_LiveGames_Tee,FOREIGN KEY
+dbo,LiveGames,PK__LiveGame__2AB897DD3628D7FB,PRIMARY KEY
+dbo,LiveScores,CK_HoleNumber,CHECK
+dbo,LiveScores,FK_LiveScores_Card,FOREIGN KEY
+dbo,LiveScores,PK__LiveScor__7DD229F1A652A8F3,PRIMARY KEY
+dbo,LiveScores,UQ_LiveScores_PlayerHole,UNIQUE
+dbo,LiveTotals,FK_LiveTotals_Card,FOREIGN KEY
+dbo,LiveTotals,PK__LiveTota__F4CD17DFC17A6C50,PRIMARY KEY
+dbo,LiveTotals,UQ_LiveTotals_Entity,UNIQUE
+dbo,TeeRatings,CK__TeeRating__Gende__681373AD,CHECK
+dbo,TeeRatings,FK_TeeRatings_Tee,FOREIGN KEY
+dbo,TeeRatings,PK_TeeRatings,PRIMARY KEY
+dbo,Tees,FK_Tees_CourseID,FOREIGN KEY
+dbo,Tees,PK__Tees__5816A3B7B15A2C3F,PRIMARY KEY
