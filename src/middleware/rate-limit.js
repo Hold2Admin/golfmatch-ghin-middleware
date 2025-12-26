@@ -1,3 +1,8 @@
+function rateLimiter() {
+  return (req, res, next) => next();
+}
+
+module.exports = { rateLimiter };
 // ============================================================
 // Rate Limiting Middleware (In-Memory)
 // Limits requests per API key per time window

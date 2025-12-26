@@ -1,3 +1,15 @@
+function addCorrelationId(req, res, next) {
+  if (!req.headers['x-correlation-id']) {
+    req.headers['x-correlation-id'] = Math.random().toString(36).slice(2);
+  }
+  next();
+}
+
+function trackRequestMetrics(req, res, next) {
+  next();
+}
+
+module.exports = { addCorrelationId, trackRequestMetrics };
 // ============================================================
 // Request Tracking Middleware
 // Adds correlation IDs and tracks request lifecycle

@@ -121,3 +121,24 @@ jobs:
         echo "Health check did not pass after $attempts attempts"
         echo "Last response:" && cat health.json || true
         exit 1
+
+  cleanup-artifacts:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Prune old artifacts (keep 2 newest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: 2
+        run: |
+          artifacts=$(gh api repos/$REPO/actions/artifacts --paginate \
+            --jq '.artifacts | sort_by(.created_at) | reverse')
+          echo "$artifacts" | jq -c ".[$KEEP:]" | jq -r '.[].id' | while read -r id; do
+            [ -n "$id" ] || continue
+            echo "Deleting artifact $id"
+            gh api -X DELETE repos/$REPO/actions/artifacts/$id > /dev/null
+          done

@@ -260,9 +260,12 @@ router.get(
         slope: t.slope,
         par: t.par,
         yardage: t.yardage || null,
-        isDefault: Boolean(ghinCourse.tees.find((x) => x.teeId === t.ghinTeeId)?.isDefault)
+        isDefault: Boolean(ghinCourse.tees.find((x) => x.teeId === t.ghinTeeId)?.isDefault),
+        lastUpdatedUtc: (ghinCourse.tees.find((x) => x.teeId === t.ghinTeeId)?.lastUpdatedUtc) 
+          || (ghinCourse.tees.find((x) => x.teeId === t.ghinTeeId)?.updatedAt) 
+          || null
       }));
-      res.json({ courseId: ghinCourseId, tees });
+      res.json({ courseId: ghinCourseId, lastUpdatedUtc: (ghinCourse.lastUpdatedUtc || ghinCourse.updatedAt || null), tees });
     } catch (error) {
       logger.error('Fetch tees error', { ghinCourseId, error: error.message });
       res.status(502).json({

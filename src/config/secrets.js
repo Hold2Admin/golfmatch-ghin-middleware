@@ -53,10 +53,12 @@ async function loadSecrets() {
     const secretsPromise = Promise.all([
       client.getSecret('applicationinsights-connection-string').catch(() => null),
       client.getSecret('GHIN-API-KEY').catch(() => null),
-      client.getSecret('GHIN-MIDDLEWARE-SECRET').catch(() => null),
+      client.getSecret('GHIN-MIDDLEWARE-API-KEY').catch(() => null),
       client.getSecret('API-KEY-HASH-SECRET').catch(() => null),
       client.getSecret('AZURE-SQL-USER').catch(() => null),
       client.getSecret('AZURE-SQL-PASSWORD').catch(() => null),
+      client.getSecret('AZURE-SQL-SERVER').catch(() => null),
+      client.getSecret('AZURE-SQL-DATABASE').catch(() => null),
       client.getSecret('REDIS-PASSWORD').catch(() => null)
     ]);
 
@@ -64,16 +66,18 @@ async function loadSecrets() {
       setTimeout(() => reject(new Error('Key Vault timeout (30s)')), 30000)
     );
 
-    const [appInsights, ghinKey, middlewareSecret, apiKeySecret, sqlUser, sqlPassword, redisPassword] = 
+    const [appInsights, ghinKey, middlewareApiKey, apiKeySecret, sqlUser, sqlPassword, sqlServer, sqlDatabase, redisPassword] = 
       await Promise.race([secretsPromise, timeoutPromise]);
 
     secretsCache = {
       APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights?.value,
       GHIN_API_KEY: ghinKey?.value,
-      GHIN_MIDDLEWARE_SECRET: middlewareSecret?.value,
+      GHIN_MIDDLEWARE_API_KEY: middlewareApiKey?.value,
       API_KEY_HASH_SECRET: apiKeySecret?.value,
       AZURE_SQL_USER: sqlUser?.value,
       AZURE_SQL_PASSWORD: sqlPassword?.value,
+      AZURE_SQL_SERVER: sqlServer?.value,
+      AZURE_SQL_DATABASE: sqlDatabase?.value,
       REDIS_PASSWORD: redisPassword?.value
     };
 

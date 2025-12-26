@@ -1,3 +1,8 @@
+function initializeAppInsights() {}
+
+function trackEvent() {}
+
+module.exports = { initializeAppInsights, trackEvent };
 // ============================================================
 // Application Insights Telemetry Configuration
 // Sends request, dependency, and custom event data to Azure

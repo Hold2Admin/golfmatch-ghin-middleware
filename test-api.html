@@ -38,7 +38,15 @@
 </head>
 <body>
     <h1>GHIN Middleware API Test Console</h1>
-    <p>Base URL: <code>http://localhost:5001/api/v1</code></p>
+    <p>Base URL: <code id="baseUrlLabel">http://localhost:5001/api/v1</code></p>
+
+    <div class="endpoint">
+        <h3>Settings</h3>
+        <label>Base URL: <input type="text" id="baseUrlInput" value="http://localhost:5001/api/v1" style="width: 420px;"></label>
+        <label style="margin-left: 10px;">API Key: <input type="password" id="apiKeyInput" placeholder="Enter X-API-Key" style="width: 320px;"></label>
+        <button onclick="saveSettings()">Save</button>
+        <div id="settingsStatus" class="success" style="margin-top:8px;"></div>
+    </div>
 
     <div class="endpoint">
         <h3>GET /health</h3>
@@ -82,18 +90,66 @@
         <pre id="course-search-result">Click button to test</pre>
     </div>
 
+    <div class="endpoint">
+        <h3>GET /courses/state/:state</h3>
+        <label>State: <input type="text" id="stateList" value="CO"></label>
+        <button onclick="testListCoursesByState()">List Courses by State</button>
+        <pre id="courses-by-state-result">Click button to test</pre>
+    </div>
+
+    <div class="endpoint">
+        <h3>GET /courses/:ghinCourseId/tees</h3>
+        <label>Course ID: <input type="text" id="courseIdTees" value="GHIN-54321"></label>
+        <button onclick="testGetTees()">Get Tees</button>
+        <pre id="tees-result">Click button to test</pre>
+    </div>
+
     <script>
-        const BASE_URL = 'http://localhost:5001/api/v1';
+        let BASE_URL = 'http://localhost:5001/api/v1';
+        let API_KEY = '';
+
+        function loadSettings() {
+            try {
+                const savedBaseUrl = localStorage.getItem('GM_BASE_URL');
+                const savedApiKey = localStorage.getItem('GM_API_KEY');
+                if (savedBaseUrl) {
+                    BASE_URL = savedBaseUrl;
+                    document.getElementById('baseUrlInput').value = savedBaseUrl;
+                    document.getElementById('baseUrlLabel').innerText = savedBaseUrl;
+                }
+                if (savedApiKey) {
+                    API_KEY = savedApiKey;
+                    document.getElementById('apiKeyInput').value = savedApiKey;
+                }
+            } catch (e) {}
+        }
+
+        function saveSettings() {
+            BASE_URL = document.getElementById('baseUrlInput').value.trim();
+            API_KEY = document.getElementById('apiKeyInput').value.trim();
+            localStorage.setItem('GM_BASE_URL', BASE_URL);
+            localStorage.setItem('GM_API_KEY', API_KEY);
+            document.getElementById('baseUrlLabel').innerText = BASE_URL;
+            document.getElementById('settingsStatus').innerText = 'Saved. Requests will include X-API-Key where required.';
+        }
 
         async function makeRequest(endpoint, options = {}) {
             try {
-                const response = await fetch(`${BASE_URL}${endpoint}`, options);
+                const defaultHeaders = { 'Content-Type': 'application/json' };
+                if (API_KEY) {
+                    defaultHeaders['X-API-Key'] = API_KEY;
+                }
+                const headers = { ...defaultHeaders, ...(options.headers || {}) };
+                const response = await fetch(`${BASE_URL}${endpoint}`, { ...options, headers });
                 const data = await response.json();
                 return { success: response.ok, status: response.status, data };
             } catch (error) {
                 return { success: false, error: error.message };
             }
         }
+
+        // Load saved settings on page ready
+        window.addEventListener('DOMContentLoaded', loadSettings);
 
         async function testHealth() {
             const result = await makeRequest('/health');
@@ -149,10 +205,25 @@
             const state = document.getElementById('state').value;
             const result = await makeRequest('/courses/search', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ courseName, state })
             });
             document.getElementById('course-search-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testListCoursesByState() {
+            const state = document.getElementById('stateList').value;
+            const result = await makeRequest(`/courses/state/${encodeURIComponent(state)}`);
+            document.getElementById('courses-by-state-result').innerHTML = 
+                `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
+                JSON.stringify(result.data || result.error, null, 2);
+        }
+
+        async function testGetTees() {
+            const courseId = document.getElementById('courseIdTees').value;
+            const result = await makeRequest(`/courses/${encodeURIComponent(courseId)}/tees`);
+            document.getElementById('tees-result').innerHTML = 
                 `<span class="${result.success ? 'success' : 'error'}">Status: ${result.status || 'Error'}</span>\n` +
                 JSON.stringify(result.data || result.error, null, 2);
         }
