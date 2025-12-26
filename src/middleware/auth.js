@@ -1,8 +1,3 @@
-function conditionalAuth(req, res, next) {
-  next();
-}
-
-module.exports = { conditionalAuth };
 // ============================================================
 // API Key Authentication Middleware
 // Validates X-API-Key header against Key Vault secret

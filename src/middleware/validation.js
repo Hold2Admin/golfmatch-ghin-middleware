@@ -1,24 +1,3 @@
-function sanitizeHeaders(req, res, next) {
-  // Minimal header sanitation: trim known headers
-  ['content-type', 'authorization', 'x-api-key'].forEach((h) => {
-    const v = req.headers[h];
-    if (typeof v === 'string') req.headers[h] = v.trim();
-  });
-  next();
-}
-
-function validateRequest(req, res, next) {
-  // Basic JSON enforcement for POST/PUT
-  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
-    const ct = (req.headers['content-type'] || '').toLowerCase();
-    if (!ct.includes('application/json')) {
-      return res.status(415).json({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Content-Type must be application/json' } });
-    }
-  }
-  next();
-}
-
-module.exports = { sanitizeHeaders, validateRequest };
 // ============================================================
 // Request Validation Middleware
 // Validates request structure, size, and content type
