@@ -23,7 +23,7 @@ async function runUpdates() {
     const pool = await sql.connect(config);
     console.log('✅ Connected');
 
-    const scriptPath = 'db-schema/ghin-mock/004_update_all_courses.sql';
+    const scriptPath = process.argv[2] || 'db-schema/ghin-mock/004_update_all_courses.sql';
     console.log(`📄 Executing updates: ${scriptPath}`);
     const sqlContent = fs.readFileSync(scriptPath, 'utf8');
 

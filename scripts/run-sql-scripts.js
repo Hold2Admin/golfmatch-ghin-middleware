@@ -36,7 +36,8 @@ async function runScripts() {
     const scripts = [
       'db-schema/ghin-mock/001_create_ghin_tables.sql',
       'db-schema/ghin-mock/002_seed_ghin_data.sql',
-      'db-schema/ghin-mock/003_seed_ca_courses.sql'
+      'db-schema/ghin-mock/003_seed_ca_courses.sql',
+      'db-schema/ghin-mock/005_seed_red_rocks.sql'
     ];
 
     for (const scriptPath of scripts) {
