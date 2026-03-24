@@ -14,12 +14,17 @@ on:
 
 env:
   AZURE_WEBAPP_NAME: golfmatch-ghin-middleware
+  AZURE_RESOURCE_GROUP: RG_GolfMatch
   NODE_VERSION: '20.x'
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -51,62 +56,29 @@ jobs:
           GETTING-STARTED.md \
           -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**" "node_modules/**"
 
-    - name: Parse publish profile
-      id: ppmeta
-      shell: bash
-      env:
-        PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-      run: |
-        set -euo pipefail
-        # Write secret to file (masked in logs)
-        echo "$PUBLISH_PROFILE" > publish_profile.xml
-        python3 - <<'PY'
-        import sys, xml.etree.ElementTree as ET
-        with open('publish_profile.xml','r') as f:
-            xml=f.read()
-        try:
-            root=ET.fromstring(xml)
-        except Exception as e:
-            print('ERROR: Publish profile XML parse failed:', e)
-            sys.exit(1)
-        profiles=root.findall('publishProfile')
-        if not profiles:
-          print('ERROR: No publishProfile entries found in secret.')
-          sys.exit(1)
-        ms = next((p for p in profiles if p.get('publishMethod')=='MSDeploy'), None)
-        if ms is None:
-            print('ERROR: MSDeploy profile not found in secret.')
-            sys.exit(1)
-        # Validate MSDeploy credentials only; other profiles (e.g., FTP) may be redacted
-        ms_user = (ms.get('userName') or '').strip()
-        ms_pwd = (ms.get('userPWD') or '').strip()
-        if not ms_user or not ms_pwd or ms_user.upper()=='REDACTED' or ms_pwd.upper()=='REDACTED':
-          print('ERROR: MSDeploy credentials are missing or REDACTED. Re-download publish profile from Azure Portal and paste full XML into secret.')
-          sys.exit(1)
-        appname = ms.get('msdeploySite') or ''
-        if not appname:
-            print('ERROR: msdeploySite missing from publish profile.')
-            sys.exit(1)
-        print('Publish profile OK. App name from msdeploySite:', appname)
-        with open('/tmp/gout','w') as gout:
-            gout.write(f"app_name={appname}\n")
-        PY
-        cat /tmp/gout >> "$GITHUB_OUTPUT"
-    - name: Deploy to Azure Web App
-      uses: azure/webapps-deploy@v2
-      id: deploywebapp
+    - name: Login to Azure (OIDC)
+      uses: azure/login@v1
       with:
-        app-name: ${{ steps.ppmeta.outputs.app_name }}
-        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: deploy.zip
-      continue-on-error: false
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Deploy to Azure Web App
+      shell: bash
+      run: |
+        az webapp deploy \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --src-path deploy.zip \
+          --type zip \
+          --async false
 
     - name: Test deployment (retry until healthy)
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_health_check == true }}
       shell: bash
       run: |
         set -euo pipefail
-        APP_URL="https://${{ steps.ppmeta.outputs.app_name }}.azurewebsites.net/api/v1/health"
+        APP_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/v1/health"
         echo "Checking health at $APP_URL"
         attempts=30
         delay=10
