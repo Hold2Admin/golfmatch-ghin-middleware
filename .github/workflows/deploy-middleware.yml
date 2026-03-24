@@ -63,15 +63,30 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: Deploy to Azure Web App
+    - name: Upload package to blob storage
       shell: bash
       run: |
-        az webapp deploy \
+        set -euo pipefail
+        BLOB_NAME="ghin-middleware-$(date -u +%Y%m%d%H%M%S).zip"
+        echo "BLOB_NAME=$BLOB_NAME" >> "$GITHUB_ENV"
+        az storage blob upload \
+          --account-name golfmatchstorage \
+          --container-name deployments \
+          --name "$BLOB_NAME" \
+          --file deploy.zip \
+          --auth-mode login \
+          --overwrite
+
+    - name: Deploy via Run From Package
+      shell: bash
+      run: |
+        set -euo pipefail
+        BLOB_URL="https://golfmatchstorage.blob.core.windows.net/deployments/${BLOB_NAME}"
+        az webapp config appsettings set \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-          --src-path deploy.zip \
-          --type zip \
-          --async false
+          --settings WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
+          --output none
 
     - name: Test deployment (retry until healthy)
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_health_check == true }}
