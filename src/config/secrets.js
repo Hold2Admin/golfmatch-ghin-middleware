@@ -1,12 +1,11 @@
 /**
  * Secrets loader with Azure Key Vault integration
- * Follows golfmatch pattern: Key Vault via managed identity with .env.local fallback
+ * Key Vault via managed identity (Azure CLI locally, managed identity in Azure).
+ * No fallbacks — if Key Vault is unreachable, startup fails explicitly.
  */
 
 const { SecretClient } = require('@azure/keyvault-secrets');
 const { DefaultAzureCredential } = require('@azure/identity');
-const fs = require('fs');
-const path = require('path');
 
 const keyVaultName = 'golfmatch-secrets';
 const keyVaultUrl = `https://${keyVaultName}.vault.azure.net`;
@@ -14,32 +13,7 @@ const keyVaultUrl = `https://${keyVaultName}.vault.azure.net`;
 let secretsCache;
 
 /**
- * Parse .env.local manually (fallback for local dev)
- */
-function parseEnvLocal(envPath) {
-  try {
-    if (!fs.existsSync(envPath)) return null;
-    const text = fs.readFileSync(envPath, 'utf8');
-    const lines = text.split(/\r?\n/);
-    const vars = {};
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      const val = trimmed.slice(eq + 1).trim();
-      vars[key] = val;
-    }
-    return vars;
-  } catch (e) {
-    console.warn('⚠️ Failed to parse .env.local:', e.message);
-    return null;
-  }
-}
-
-/**
- * Load secrets from Key Vault or .env.local
+ * Load secrets from Key Vault
  */
 async function loadSecrets() {
   if (secretsCache) return secretsCache;
@@ -85,22 +59,7 @@ async function loadSecrets() {
     return secretsCache;
 
   } catch (kvError) {
-    console.warn('⚠️ Key Vault failed, falling back to .env.local:', kvError.message);
-    
-    // Fallback to .env.local for local development
-    const envPath = path.join(__dirname, '..', '..', '.env.local');
-    const localVars = parseEnvLocal(envPath);
-    
-    if (localVars) {
-      secretsCache = localVars;
-      console.log('✅ Secrets loaded from .env.local');
-      return secretsCache;
-    }
-
-    // Final fallback to process.env (Azure App Service sets these directly)
-    console.log('ℹ️ Using process.env directly');
-    secretsCache = process.env;
-    return secretsCache;
+    throw new Error(`Key Vault unavailable — cannot start without secrets: ${kvError.message}`);
   }
 }
 
