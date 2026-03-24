@@ -38,10 +38,11 @@ module.exports = {
   // GHIN API
   ghin: {
     baseUrl: process.env.GHIN_API_BASE_URL || 'https://api.ghin.com/v2',
-    apiKey: process.env.GHIN_API_KEY,
+    sandboxEmail: process.env.GHIN_SANDBOX_EMAIL,
+    sandboxPassword: process.env.GHIN_SANDBOX_PASSWORD,
     timeout: parseInt(process.env.GHIN_API_TIMEOUT_MS) || 10000,
     maxRps: parseInt(process.env.GHIN_API_MAX_RPS) || 20,
-    useMock: !process.env.GHIN_API_KEY || process.env.GHIN_API_KEY === 'your-ghin-api-key-here'
+    useMock: !process.env.GHIN_SANDBOX_EMAIL
   },
 
   // Fore Play API

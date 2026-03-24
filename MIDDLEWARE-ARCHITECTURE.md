@@ -1,6 +1,6 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** December 25, 2025  
+**Last Updated:** March 24, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
 **Status:** Active development — Fore Play integration ready
 
@@ -568,13 +568,14 @@ GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M
 
 ---
 
-## 6. Future: GHIN API Integration
+## 6. GHIN API Integration Status & Future
 
-### Phase 1 (Current)
-- ✅ Middleware serves mock course/tee/hole data
-- ✅ Middleware serves mock player data (Clayton, Michael, Ryan)
-- ✅ golfmatch-api can call middleware endpoints (players, courses, tees, holes)
-- ✅ Database schema supports nightly sync from live GHIN
+### Phase 1 (Complete)
+- ✅ Middleware authenticates to USGA sandbox via `POST /users/login.json` (email/password from Key Vault)
+- ✅ Live player lookup wired and validated (`GET /api/v1/players/:ghinNumber`)
+- ✅ Live course lookup wired and validated (`GET /api/v1/courses/:ghinCourseId`, `/tees`, `/holes`)
+- ✅ Outbound allowlist gate implemented in `usaGhinApiClient` with explicit deny behavior
+- ✅ Phase 1 smoke tests completed end-to-end (player + course paths)
 
 ### Phase 2 (Planned — Course Nightly Sync)
 - 🔄 Implement nightly background job to:
@@ -638,19 +639,46 @@ Result:
 ### Local Development
 ```bash
 npm install
-npm run dev    # Runs on :3000 with mocks
+npm run dev    # Runs on :5001 (PORT env var override supported)
 ```
+
+Runtime mode is driven by GHIN sandbox credential presence:
+- `GHIN_SANDBOX_EMAIL` + `GHIN_SANDBOX_PASSWORD` present -> LIVE mode
+- Missing credentials -> MOCK mode
 
 ### Azure Deployment
 - **Runtime:** Node.js 20.x on Linux App Service
 - **Secrets:** Azure Key Vault (DefaultAzureCredential)
   - `APPLICATIONINSIGHTS_CONNECTION_STRING`
-  - `GHIN_API_KEY` (future live GHIN API calls)
+  - `GHIN-SANDBOX-EMAIL`
+  - `GHIN-SANDBOX-PASSWORD`
+  - `GHIN-API-BASE-URL`
   - `AZURE_SQL_USER` / `AZURE_SQL_PASSWORD`
   - `REDIS_PASSWORD`
 - **Database:** `golfdb` on `golfmatchserver.database.windows.net`
 - **Cache:** Azure Redis (TLS, managed identity)
-- **CI/CD:** GitHub Actions (ZIP Deploy + optional health check)
+- **CI/CD:** GitHub Actions — Run From Package via Azure Blob Storage (see below)
+
+### CI/CD: Run From Package
+
+The App Service SCM endpoint (`Kudu-Deny-All` at priority 1) is intentionally blocked to all public traffic as part of the VNet security posture. All Kudu-based deployment methods (`azure/webapps-deploy`, `az webapp deploy`) are permanently disabled by design.
+
+**Deployment flow:**
+1. GitHub Actions builds the app and creates a zip package
+2. Uploads zip to `golfmatchstorage/deployments/` blob container via OIDC auth
+3. Sets `WEBSITE_RUN_FROM_PACKAGE` app setting (plain blob URL, no SAS) via ARM
+4. App Service system-assigned managed identity fetches zip directly from blob at startup — no Kudu involved
+
+**Auth: OIDC (no secrets)**
+- Service principal: `golfmatch-github-actions` (appId `4ac504e2-9f9d-4084-953c-047ce32ddea1`)
+- Federated credential subject: `repo:Hold2Admin/golfmatch-ghin-middleware:ref:refs/heads/main`
+- Required GitHub secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+- **Not used:** `AZURE_WEBAPP_PUBLISH_PROFILE` (deleted)
+
+**Role assignments:**
+- `golfmatch-github-actions` SP → Storage Blob Data Contributor on `golfmatchstorage` (upload)
+- `golfmatch-github-actions` SP → Contributor on `RG_GolfMatch` (set app settings via ARM)
+- App Service system-assigned managed identity (`8844f213-...`) → Storage Blob Data Reader on `golfmatchstorage` (fetch zip at startup)
 
 ### Connection String (for golfmatch-api)
 ```
@@ -729,7 +757,8 @@ golfmatch-ghin-middleware/
 │   │   ├── health.js                     -- Health check
 │   │   └── players.js                    -- Player search
 │   ├── services/
-│   │   ├── ghinClient.js                 -- Mock GHIN API client
+│   │   ├── ghinClient.js                 -- Gateway client (DB/cache + mock/live routing)
+│   │   ├── usaGhinApiClient.js           -- Live USGA auth + allowlisted HTTP client
 │   │   └── transformers/
 │   │       └── courseTransformer.js      -- Response normalization
 │   └── utils/
@@ -765,7 +794,7 @@ golfmatch-ghin-middleware/
 3. Call `usp_AddTeeForCourseWithRatings` for each additional tee variant
 4. Call `usp_ReplaceHoleDefaultsByGender` to populate HoleDefaults
 
-### Test Endpoints Locally (With MockData)
+### Test Endpoints Locally (Mock Data)
 ```bash
 # Start local middleware
 npm run dev
@@ -795,6 +824,24 @@ gmx-local "/api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M"
 # 2. List CO courses → Cedar Ridge
 # 3. Fetch tees → show Blue M + White M (filter for male)
 # 4. Fetch holes for Blue M → 18-hole baseline
+```
+
+### Test Endpoints Locally (Live Sandbox)
+```bash
+# Start middleware with GHIN sandbox secrets available
+npm run dev
+
+# Verify runtime mode
+gmx-local /api/v1/health
+# Expect: ghinApiMode = LIVE
+
+# Player smoke test
+gmx-local /api/v1/players/10000257
+
+# Course smoke test
+gmx-local /api/v1/courses/6765
+gmx-local /api/v1/courses/6765/tees
+gmx-local "/api/v1/courses/6765/holes?teeId=357784&gender=M"
 ```
 
 ### Refresh Player Handicap (Future Phase 3)
@@ -836,8 +883,8 @@ node scripts/export-schema.js
 - **Manual:** Run `EXEC usp_GetEffectiveHoleData @TeeID = 1, @Gender = 'M';` in SSMS
 
 ### Endpoints Return 502
-- **Issue:** Mock data missing or transformer error
-- **Fix:** Check [src/mocks/ghinData.js](src/mocks/ghinData.js) syntax; run `npm run dev` and inspect logs
+- **Issue:** GHIN API auth/request error or transformer error
+- **Fix:** Check middleware logs for upstream status/message; verify `GHIN_SANDBOX_EMAIL`, `GHIN_SANDBOX_PASSWORD`, and `GHIN_API_BASE_URL` are loaded; confirm `ghinApiMode` from `/api/v1/health`
 
 ### Fore Play Can't Call Middleware
 - **Issue:** CORS or API key rejected
@@ -851,7 +898,7 @@ node scripts/export-schema.js
 - **Fore Play:** golfmatch-api (separate repo, calls middleware endpoints)
 - **Database:** `golfdb` on `golfmatchserver.database.windows.net`
 - **Azure Deployment:** App Service `golfmatch-ghin-middleware.azurewebsites.net`
-- **Key Vault:** `golfrm-kv` (shared with Fore Play)
+- **Key Vault:** `golfmatch-secrets`
 
 ---
 

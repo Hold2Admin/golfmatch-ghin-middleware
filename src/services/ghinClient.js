@@ -8,6 +8,7 @@ const { createLogger } = require('../utils/logger');
 const config = require('../config');
 const mockData = require('../mocks/ghinData');
 const db = require('../config/database');
+const usaGhinApiClient = require('./usaGhinApiClient');
 
 const logger = createLogger('ghinClient');
 // Use database by default (production-like), unless explicitly disabled
@@ -24,11 +25,8 @@ async function getPlayer(ghinNumber) {
     return mockData.getPlayer(ghinNumber);
   }
 
-  // TODO: Replace with real GHIN API call
-  // const response = await fetch(`${config.ghin.baseUrl}/players/${ghinNumber}`, {
-  //   headers: { 'Authorization': `Bearer ${config.ghin.apiKey}` }
-  // });
-  // return response.json();
+  logger.info(`[LIVE] Fetching player ${ghinNumber} from USGA API`);
+  return usaGhinApiClient.getGolfer(ghinNumber);
 }
 
 /**
@@ -42,7 +40,8 @@ async function searchPlayers(params) {
     return mockData.searchPlayers(params);
   }
 
-  // TODO: Replace with real GHIN API call
+  logger.info('[LIVE] Searching players from USGA API', params);
+  return usaGhinApiClient.searchGolfers(params);
 }
 
 /**
@@ -105,7 +104,8 @@ async function getCourse(ghinCourseId) {
     return mockData.getCourse(ghinCourseId);
   }
 
-  // TODO: Replace with real GHIN API call
+  logger.info(`[LIVE] Fetching course ${ghinCourseId} from USGA API`);
+  return usaGhinApiClient.getCourse(ghinCourseId);
 }
 
 /**
@@ -142,7 +142,8 @@ async function searchCourses(params) {
     return mockData.searchCourses(params);
   }
 
-  // TODO: Replace with real GHIN API call
+  logger.info('[LIVE] Searching courses from USGA API', params);
+  return usaGhinApiClient.searchCourses(params);
 }
 
 module.exports = {
