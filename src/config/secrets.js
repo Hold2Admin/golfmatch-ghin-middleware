@@ -12,6 +12,20 @@ const keyVaultUrl = `https://${keyVaultName}.vault.azure.net`;
 
 let secretsCache;
 
+async function getFirstSecret(client, names) {
+  for (const name of names) {
+    try {
+      const secret = await client.getSecret(name);
+      if (secret?.value && String(secret.value).trim()) {
+        return String(secret.value).trim();
+      }
+    } catch (_) {
+      // Try next candidate name.
+    }
+  }
+  return null;
+}
+
 /**
  * Load secrets from Key Vault
  */
@@ -45,6 +59,13 @@ async function loadSecrets() {
     const [appInsights, ghinEmail, ghinPassword, ghinBaseUrl, middlewareApiKey, apiKeySecret, sqlUser, sqlPassword, sqlServer, sqlDatabase, redisPassword] = 
       await Promise.race([secretsPromise, timeoutPromise]);
 
+    const [cacheDbServer, cacheDbName, cacheDbUser, cacheDbPassword] = await Promise.all([
+      getFirstSecret(client, ['GHIN-CACHE-DB-SERVER', 'GHIN_CACHE_DB_SERVER']),
+      getFirstSecret(client, ['GHIN-CACHE-DB-NAME', 'GHIN_CACHE_DB_NAME']),
+      getFirstSecret(client, ['GHIN-CACHE-DB-USER', 'GHIN_CACHE_DB_USER']),
+      getFirstSecret(client, ['GHIN-CACHE-DB-PASSWORD', 'GHIN_CACHE_DB_PASSWORD'])
+    ]);
+
     secretsCache = {
       APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights?.value,
       GHIN_SANDBOX_EMAIL: ghinEmail?.value,
@@ -52,6 +73,10 @@ async function loadSecrets() {
       GHIN_API_BASE_URL: ghinBaseUrl?.value,
       GHIN_MIDDLEWARE_API_KEY: middlewareApiKey?.value,
       API_KEY_HASH_SECRET: apiKeySecret?.value,
+      GHIN_CACHE_DB_SERVER: cacheDbServer,
+      GHIN_CACHE_DB_NAME: cacheDbName,
+      GHIN_CACHE_DB_USER: cacheDbUser,
+      GHIN_CACHE_DB_PASSWORD: cacheDbPassword,
       AZURE_SQL_USER: sqlUser?.value,
       AZURE_SQL_PASSWORD: sqlPassword?.value,
       AZURE_SQL_SERVER: sqlServer?.value,

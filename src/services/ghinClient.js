@@ -7,7 +7,7 @@
 const { createLogger } = require('../utils/logger');
 const config = require('../config');
 const mockData = require('../mocks/ghinData');
-const db = require('../config/database');
+const db = require('./database');
 const usaGhinApiClient = require('./usaGhinApiClient');
 
 const logger = createLogger('ghinClient');
@@ -68,7 +68,15 @@ async function getCourse(ghinCourseId) {
     
     // Get tees for this course
     const tees = await db.query(
-      `SELECT teeId, teeName, gender, isDefault, courseRating, slope, par, yardage, updatedAt
+      `SELECT teeId, teeName, gender, isDefault,
+              courseRating18 AS courseRating,
+              slopeRating18 AS slope,
+              par18 AS par,
+              yardage18 AS yardage,
+              teeSetSide,
+              courseRatingF9, slopeRatingF9, parF9, yardageF9,
+              courseRatingB9, slopeRatingB9, parB9, yardageB9,
+              updatedAt
        FROM GHIN_Tees
        WHERE courseId = @courseId
        ORDER BY gender, teeName`,
@@ -116,15 +124,22 @@ async function getCourse(ghinCourseId) {
 async function searchCourses(params) {
   if (USE_DATABASE) {
     logger.info('[DATABASE] Searching courses', params);
-    
-    const { state } = params;
-    const courses = await db.query(
-      `SELECT courseId, courseName, city, state, country, facilityId, updatedAt 
-       FROM GHIN_Courses 
-       WHERE state = @state 
-       ORDER BY courseName`,
-      { state: { type: db.sql.VarChar, value: state } }
-    );
+
+    const query = `
+      SELECT courseId, courseName, city, state, country, facilityId, facilityName, updatedAt
+      FROM GHIN_Courses
+      WHERE (@courseName IS NULL OR courseName LIKE '%' + @courseName + '%')
+        AND (@city IS NULL OR city LIKE '%' + @city + '%')
+        AND (@state IS NULL OR state = @state)
+        AND (@country IS NULL OR country = @country)
+      ORDER BY courseName`;
+
+    const courses = await db.query(query, {
+      courseName: { type: db.sql.NVarChar, value: params.courseName || null },
+      city: { type: db.sql.NVarChar, value: params.city || null },
+      state: { type: db.sql.VarChar, value: params.state || null },
+      country: { type: db.sql.VarChar, value: params.country || null }
+    });
     
     return courses.map(c => ({
       courseId: c.courseId,
@@ -133,6 +148,7 @@ async function searchCourses(params) {
       state: c.state,
       country: c.country,
       facilityId: c.facilityId,
+      facilityName: c.facilityName || null,
       lastUpdatedUtc: c.updatedAt || null
     }));
   }

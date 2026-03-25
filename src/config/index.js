@@ -7,6 +7,33 @@
 // - Azure App Service (production) with Key Vault references
 // - loadSecrets() in development (Key Vault or .env.local fallback)
 
+function parseBoolean(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+
+  return null;
+}
+
+function shouldUseMockMode() {
+  // Explicit override wins when provided.
+  const override = parseBoolean(process.env.GHIN_USE_MOCK);
+  if (override !== null) {
+    return override;
+  }
+
+  // Default: live mode when sandbox credentials exist.
+  return !(process.env.GHIN_SANDBOX_EMAIL && process.env.GHIN_SANDBOX_PASSWORD);
+}
+
 module.exports = {
   // Server
   port: process.env.PORT || 5001,
@@ -42,7 +69,9 @@ module.exports = {
     sandboxPassword: process.env.GHIN_SANDBOX_PASSWORD,
     timeout: parseInt(process.env.GHIN_API_TIMEOUT_MS) || 10000,
     maxRps: parseInt(process.env.GHIN_API_MAX_RPS) || 20,
-    useMock: !process.env.GHIN_SANDBOX_EMAIL
+    get useMock() {
+      return shouldUseMockMode();
+    }
   },
 
   // Fore Play API

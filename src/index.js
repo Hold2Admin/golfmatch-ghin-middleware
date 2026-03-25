@@ -16,20 +16,18 @@ const database = require('./services/database');
 const redis = require('./services/redis');
 const { loadSecrets } = require('./config/secrets');
 
-// Load secrets on startup (Key Vault or .env.local) - skip in test environment
-if (process.env.NODE_ENV !== 'test') {
-  (async () => {
-    try {
-      const secrets = await loadSecrets();
-      Object.assign(process.env, secrets);
-      console.log('✅ Secrets loaded');
-    } catch (error) {
-      console.warn('⚠️ Using process.env defaults:', error.message);
-    }
-    
-    // Initialize Application Insights after secrets are loaded
-    initializeAppInsights();
-  })();
+async function initializeSecrets() {
+  if (process.env.NODE_ENV === 'test') {
+    return { loaded: false, source: 'test' };
+  }
+
+  try {
+    const secrets = await loadSecrets();
+    Object.assign(process.env, secrets);
+    return { loaded: true, source: 'key-vault-or-local' };
+  } catch (error) {
+    return { loaded: false, source: 'process-env', warning: error.message };
+  }
 }
 
 const app = express();
@@ -73,22 +71,6 @@ app.use(trackRequestMetrics); // Track request metrics and timing
 app.use(validateRequest); // Validate request structure
 app.use(conditionalAuth); // API Key authentication (except /health and /)
 app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
-
-// Request logging
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    logger.info({
-      method: req.method,
-      path: req.path,
-      status: res.statusCode,
-      duration: `${duration}ms`,
-      ip: req.ip
-    });
-  });
-  next();
-});
 
 // ============================================================
 // Routes
@@ -140,41 +122,65 @@ app.use((err, req, res, next) => {
 
 const PORT = config.port;
 
-// Lazy-initialize optional services in background (don't block startup)
-if (process.env.NODE_ENV !== 'test') {
+async function bootstrap() {
+  if (process.env.NODE_ENV === 'test') {
+    return;
+  }
+
+  const secretStatus = await initializeSecrets();
+  if (secretStatus.warning) {
+    logger.warn('Secrets loader fallback in use', { warning: secretStatus.warning });
+  }
+
+  // Initialize Application Insights after secrets are loaded/fallback is known.
+  initializeAppInsights();
+
+  // Lazy-initialize optional services in background (do not block readiness).
   setImmediate(async () => {
-    if (config.db.server) {
-      try {
-        await database.connect();
-      } catch (error) {
-        logger.warn('Database connection failed in background', { error: error.message });
-      }
+    try {
+      await database.connect();
+    } catch (error) {
+      logger.warn('Database background connect failed', { error: error.message });
     }
 
     if (config.redis.host) {
       try {
         await redis.connect();
       } catch (error) {
-        logger.warn('Redis connection failed in background', { error: error.message });
+        logger.warn('Redis background connect failed', { error: error.message });
       }
     }
   });
-}
 
-// Only start server if not in test mode
-if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
+    const ghinMode = config.ghin.useMock ? 'MOCK' : 'LIVE';
+    const dbConfigured = Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME);
+
+    logger.info('Startup summary', {
+      port: PORT,
+      environment: config.env,
+      ghinMode,
+      dbConfigured,
+      redisConfigured: Boolean(config.redis.host),
+      secretsLoaded: secretStatus.loaded,
+      secretsSource: secretStatus.source
+    });
     logger.info(`GHIN Middleware API listening on port ${PORT}`);
-    logger.info(`Environment: ${config.env}`);
-    logger.info(`GHIN API Mode: ${config.ghin.useMock ? 'MOCK' : 'LIVE'}`);
-    
-    // Track startup event
+    logger.info('✅ Startup complete - middleware is ready to accept requests');
+
     trackEvent('ApplicationStartup', {
       port: PORT.toString(),
       environment: config.env,
-      ghinMode: config.ghin.useMock ? 'MOCK' : 'LIVE'
+      ghinMode,
+      dbConfigured: String(dbConfigured),
+      secretsLoaded: String(secretStatus.loaded)
     });
   });
 }
+
+bootstrap().catch((error) => {
+  logger.error('Startup failed', { error: error.message, stack: error.stack });
+  process.exit(1);
+});
 
 module.exports = app;

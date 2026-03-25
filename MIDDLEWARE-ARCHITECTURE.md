@@ -549,18 +549,18 @@ CREATE TABLE GhinCourseMapping (
 
 | Migration | Target | Status | Purpose |
 |-----------|--------|--------|---------|
-| **023_phase15_ghin_schema_extensions.sql** | golfdb | Ready | Add metadata + consent/verification + tournament flag |
-| **024_golfdb_ghin_course_mapping.sql** | golfdb | Ready | Create GhinCourseMapping bridge table |
-| **001_create_ghin_cache_tables.sql** | golfdb-ghin-cache | Ready | Create production GHIN cache schema |
+| **023_phase15_ghin_schema_extensions.sql** | golfdb | Executed + verified (Mar 24, 2026) | Add metadata + consent/verification + tournament flag |
+| **024_golfdb_ghin_course_mapping.sql** | golfdb | Executed + verified (Mar 24, 2026; FK syntax patched to `ON DELETE NO ACTION`) | Create GhinCourseMapping bridge table |
+| **001_create_ghin_cache_tables.sql** | golfdb-ghin-cache | Executed + verified (Mar 24, 2026) | Create production GHIN cache schema |
 | **025_drop_golfdb_ghin_mock_tables.sql** (deferred) | golfdb | Blocked | Drop mock tables after cache DB goes live |
 
 **Execution Sequence (Mandatory Order):**
-1. Run migration 023 (golfdb) — adds metadata + consent/verification columns
-2. Run migration 024 (golfdb) — creates GhinCourseMapping bridge
-3. Run cache DB migration 001 (golfdb-ghin-cache) — creates GHIN_Courses/Tees/Holes with extended schema
-4. **Update middleware wiring** — Configure `src/services/database.js` to read from golfdb-ghin-cache for course queries
-5. **Populate cache DB** — Insert 1–2 real sandbox courses via middleware GHIN API client
-6. **Integration testing** — Verify course lookups, tee ratings (F9/B9/18H), score posting
+1. ✅ Migration 023 applied to golfdb — metadata + consent/verification columns live
+2. ✅ Migration 024 applied to golfdb — GhinCourseMapping bridge live
+3. ✅ Cache DB migration 001 applied to golfdb-ghin-cache — GHIN_Courses/Tees/Holes live
+4. ✅ **Middleware wiring updated** — `src/services/database.js`, `src/config/secrets.js`, and `src/services/ghinClient.js` now route course queries to cache DB with runtime env resolution
+5. ✅ **Cache DB seeded** — Real GHIN course (`courseId=1385`) inserted and queryable
+6. ✅ **Local integration smoke** — search/course/tees/holes flow validated on localhost
 7. Run migration 025 (golfdb, after cutover verification) — drop mock tables
 
 **See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache for detailed execution runbook with cutover checkpoints and verification queries.**
@@ -785,14 +785,15 @@ GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M
 - ✅ Outbound allowlist gate implemented in `usaGhinApiClient` with explicit deny behavior
 - ✅ Phase 1 smoke tests completed end-to-end (player + course paths)
 
-### Phase 1.5 (In Progress — March 2026)
+### Phase 1.5 (Pre-Cutover — March 2026)
 - ✅ **Two-database architecture designed** — golfdb (app) + golfdb-ghin-cache (production GHIN data)
 - ✅ **Extended cache schema authored** — GHIN_Courses/Tees/Holes with TeeSetSide awareness, F9/B9/18H ratings, 24h TTL
 - ✅ **GhinCourseMapping bridge table designed** — maps GHIN IDs ↔ Golf Match IDs (no cross-DB FK)
 - ✅ **Metadata + consent/verification columns designed** — UserProfiles (GPA consent), GlobalRoster (identity verification only)
-- ✅ **Migration suite authored** — 3 live migrations (023, 024, cache DB 001) + 1 deferred (025); all idempotent
-- 🔄 **Middleware integration pending** — Update `src/services/database.js` to read from golfdb-ghin-cache for course queries
-- 🔄 **Cache DB population pending** — Insert real GHIN data via middleware API client
+- ✅ **Migration suite executed** — 023 + 024 on golfdb and cache migration 001 on golfdb-ghin-cache
+- ✅ **Middleware integration complete** — cache DB routing and secret-name compatibility fixes are in place
+- ✅ **Cache DB population validated** — real seeded course path works end-to-end
+- ⏳ **Final cutover step pending** — migration 025 remains deferred until explicit go/no-go
 
 **See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache workspace for complete migration suite details, execution sequence, and cutover checkpoints.**
 
@@ -1136,6 +1137,21 @@ gmx-local /api/v1/players/10000257
 gmx-local /api/v1/courses/6765
 gmx-local /api/v1/courses/6765/tees
 gmx-local "/api/v1/courses/6765/holes?teeId=357784&gender=M"
+```
+
+### Phase 1.5 Localhost Cache Smoke (Mar 24, 2026)
+```bash
+# Name-only search against local middleware (no state required)
+POST /api/v1/courses/search { "courseName": "hangman" }
+# -> 200, totalResults=1, first.courseId=1385
+
+# Tees for seeded real course
+GET /api/v1/courses/1385/tees
+# -> 200, tees=11
+
+# Hole baselines for returned tee/gender
+GET /api/v1/courses/1385/holes?teeId=<ghinTeeId>&gender=<M|W>
+# -> 200, holes=18
 ```
 
 ### Refresh Player Handicap (Future Phase 3)

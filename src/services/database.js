@@ -9,6 +9,44 @@ const { createLogger } = require('../utils/logger');
 const logger = createLogger('database');
 let pool = null;
 let isConnected = false;
+let hasLoggedMissingConfig = false;
+
+function getRuntimeDbConfig() {
+  const server = process.env.GHIN_CACHE_DB_SERVER || config.db.server;
+  const database = process.env.GHIN_CACHE_DB_NAME || config.db.database;
+  const user = process.env.GHIN_CACHE_DB_USER || config.db.user;
+  const password = process.env.GHIN_CACHE_DB_PASSWORD || config.db.password;
+
+  return {
+    server,
+    database,
+    user,
+    password,
+    options: config.db.options,
+    pool: {
+      max: 10,
+      min: 0,
+      idleTimeoutMillis: 30000
+    }
+  };
+}
+
+function getMissingDbConfigFields(dbConfig) {
+  const missing = [];
+  if (!dbConfig.server) {
+    missing.push('GHIN_CACHE_DB_SERVER');
+  }
+  if (!dbConfig.database) {
+    missing.push('GHIN_CACHE_DB_NAME');
+  }
+  if (!dbConfig.user) {
+    missing.push('GHIN_CACHE_DB_USER');
+  }
+  if (!dbConfig.password) {
+    missing.push('GHIN_CACHE_DB_PASSWORD');
+  }
+  return missing;
+}
 
 /**
  * Initialize database connection pool
@@ -19,28 +57,26 @@ async function connect() {
   }
 
   try {
-    // Skip DB if not configured
-    if (!config.db.server || !config.db.database) {
-      logger.info('Database not configured, skipping connection');
+    const dbConfig = getRuntimeDbConfig();
+
+    const missing = getMissingDbConfigFields(dbConfig);
+
+    // Skip DB if required config is missing
+    if (missing.length > 0) {
+      if (!hasLoggedMissingConfig) {
+        logger.warn('Database configuration missing; cache DB disabled until env is set', {
+          missing,
+          requiredForMode: 'DATABASE'
+        });
+        hasLoggedMissingConfig = true;
+      }
       return null;
     }
 
-    const dbConfig = {
-      server: config.db.server,
-      database: config.db.database,
-      user: config.db.user,
-      password: config.db.password,
-      options: config.db.options,
-      pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000
-      }
-    };
-
     pool = await sql.connect(dbConfig);
     isConnected = true;
-    logger.info(`Database connected: ${config.db.server}/${config.db.database}`);
+    hasLoggedMissingConfig = false;
+    logger.info(`Database connected: ${dbConfig.server}/${dbConfig.database}`);
     return pool;
   } catch (error) {
     logger.error('Database connection failed', { error: error.message });
@@ -58,12 +94,13 @@ async function checkHealth() {
   }
 
   try {
+    const dbConfig = getRuntimeDbConfig();
     const result = await pool.request().query('SELECT 1 AS health');
     return { 
       status: 'healthy', 
       connected: true,
-      server: config.db.server,
-      database: config.db.database
+      server: dbConfig.server,
+      database: dbConfig.database
     };
   } catch (error) {
     logger.error('Database health check failed', { error: error.message });
@@ -94,9 +131,35 @@ function getPool() {
   return pool;
 }
 
+/**
+ * Execute a parameterized query against the configured middleware DB.
+ */
+async function query(sqlQuery, params = {}) {
+  const activePool = await connect();
+  if (!activePool) {
+    const missing = getMissingDbConfigFields(getRuntimeDbConfig());
+    throw new Error(`Database not configured (${missing.join(', ')})`);
+  }
+
+  const request = activePool.request();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value && typeof value === 'object' && 'type' in value && 'value' in value) {
+      request.input(key, value.type, value.value);
+    } else {
+      request.input(key, value);
+    }
+  });
+
+  const result = await request.query(sqlQuery);
+  return result.recordset;
+}
+
 module.exports = {
   connect,
   checkHealth,
   close,
-  getPool
+  getPool,
+  query,
+  sql
 };
