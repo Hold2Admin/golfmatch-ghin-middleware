@@ -42,6 +42,36 @@ async function run() {
 
   console.log(`Course: ${course.courseName} — ${course.tees.length} tees`);
 
+  // Sync course-level metadata first so city/state stay aligned with source.
+  const courseUpdate = await pool.request()
+    .input('courseId', sql.VarChar, course.courseId)
+    .input('courseName', sql.NVarChar, course.courseName ?? null)
+    .input('city', sql.NVarChar, course.city ?? null)
+    .input('state', sql.VarChar, course.state ?? null)
+    .input('country', sql.VarChar, course.country ?? null)
+    .input('facilityId', sql.VarChar, course.facilityId ?? null)
+    .input('facilityName', sql.NVarChar, course.courseName ?? null)
+    .query(`
+      UPDATE GHIN_Courses
+      SET
+        courseName = @courseName,
+        city = @city,
+        state = @state,
+        country = COALESCE(@country, country),
+        facilityId = @facilityId,
+        facilityName = @facilityName,
+        updatedAt = GETUTCDATE()
+      WHERE courseId = @courseId
+    `);
+
+  if ((courseUpdate.rowsAffected?.[0] ?? 0) === 0) {
+    console.log(`  SKIP (course not in cache): ${course.courseId}`);
+  } else {
+    console.log(
+      `  Updated course: ${course.courseId} city=${course.city ?? 'null'} state=${course.state ?? 'null'}`
+    );
+  }
+
   for (const tee of course.tees) {
     const existing = await pool.request()
       .input('teeId', sql.VarChar, tee.teeId)

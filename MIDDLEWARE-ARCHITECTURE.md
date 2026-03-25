@@ -1,8 +1,8 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** March 24, 2026  
+**Last Updated:** March 25, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — Fore Play integration ready
+**Status:** Active development — mirror-first runtime direction locked, sync automation still in progress
 
 ---
 
@@ -12,16 +12,25 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 
 1. **Caches GHIN course/tee/hole data** locally in Azure SQL (`golfdb-ghin-cache` — Phase 1.5+)
 2. **Exposes normalized endpoints** for Fore Play to fetch course baselines and player handicaps
-3. **Syncs nightly from live GHIN API** (future) to keep cache current
+3. **Runs webhook-triggered and callback-driven sync** (with scheduled reconciliation safety net)
 4. **Eliminates per-user GHIN API calls** during search/play workflows (cost optimization)
 5. **Supports future direct GHIN API integration** without changing Fore Play's architecture
 
 **Key Principle:** Fore Play never calls GHIN directly. All GHIN data flows through middleware.
 
-**Phase 1.5 Architecture Change (March 2026):** Migrated from single-database design to **two-database architecture**:
+**Phase 1.5+ Architecture Change (March 2026):** Migrated from single-database design to **two-database architecture**:
 - **`golfdb`** — Fore Play canonical application database (UserProfiles, GlobalRoster, Events, Courses, Tees, course metadata)
 - **`golfdb-ghin-cache`** — Separate production GHIN cache database (GHIN_Courses, GHIN_Tees, GHIN_Holes with extended schema)
-- **Bridge table** — `GhinCourseMapping` in golfdb maps GHIN IDs to Golf Match IDs (no cross-DB FK; cross-DB joins via app layer)
+- **Runtime mirror in golfdb** — `GhinRuntimeCourses`, `GhinRuntimeTees`, `GhinRuntimeHoles` are the locked runtime serving model for GHIN-backed course reads
+- **Bridge table note** — `GhinCourseMapping` exists from earlier design and is retained pending audit before any cleanup/removal
+
+### Current validated progress (Mar 25, 2026)
+
+- Cache DB seed and smoke flow validated with real GHIN course `1385` (search -> tees -> holes).
+- Course location normalization was corrected: read `CourseCity` / `CourseState` from GHIN payload and normalize state `US-XX` -> `XX`.
+- Cache refresh now preserves city/state correctly for the validated seed course.
+- One-time manual proof synced course `1385` from cache into `golfdb.dbo.GhinRuntimeCourses`.
+- Remaining major gap: automated cache -> mirror callback/webhook sync path is not yet implemented in `golf-match-local-cache` API.
 
 ---
 
@@ -35,6 +44,8 @@ Fore Play Frontend (Vite @ localhost:5173)
 golfmatch-api (Node.js @ localhost:5000 or Azure)
   ↓
 Call Middleware Endpoints:
+  • POST /api/v1/courses/search            (search by name/city/state/country)
+  • GET /api/v1/courses/:ghinCourseId      (full course snapshot)
   • GET /api/v1/courses/state/:state       (list courses by state)
   • GET /api/v1/courses/:courseId/tees     (fetch tees for a course)
   • GET /api/v1/courses/:courseId/holes    (fetch hole baselines for tee+gender)
@@ -57,8 +68,38 @@ golfmatch-ghin-middleware (Azure App Service)
 ```
 
 **Key Change (Phase 1.5):** Separate cache DB isolates GHIN data from Golf Match core tables.
+**Key Runtime Decision (Mar 25, 2026):** GHIN-backed gameplay reads are served from golfdb mirror tables (`GhinRuntimeCourses`, `GhinRuntimeTees`, `GhinRuntimeHoles`), not direct middleware runtime reads.
 
 ### 2.2 Endpoints for golfmatch-api
+
+#### Search Courses (Primary)
+```
+POST /api/v1/courses/search
+
+Request Body:
+{
+  "courseName": "hangman",
+  "state": "WA"
+}
+
+Response:
+{
+  "results": [
+    {
+      "ghinCourseId": "1385",
+      "courseName": "Hangman Valley Golf Course",
+      "city": "Spokane",
+      "state": "WA"
+    }
+  ],
+  "totalResults": N
+}
+```
+
+#### Fetch Full Course Snapshot
+```
+GET /api/v1/courses/:ghinCourseId
+```
 
 #### List Courses by State
 ```
@@ -191,61 +232,26 @@ See [src/mocks/ghinData.js](src/mocks/ghinData.js) for full mock data.
 
 ### 2.4 Integration Flow in golfmatch-api
 
-**Full Round Setup Workflow:**
+**Current Runtime Workflow (mirror-first):**
 1. **User enters GHIN number** → calls middleware `POST /api/v1/players/search`
    - Returns: gender, handicap index, association, etc.
    - golfmatch-api stores this in `Players` table (or session)
-2. **User selects state** → calls middleware `GET /api/v1/courses/state/CO`
-   - Returns: list of courses in Colorado
-3. **User selects course** → calls middleware `GET /api/v1/courses/GHIN-54321/tees`
+2. **User searches courses** → calls middleware `POST /api/v1/courses/search`
+  - Returns: matching courses (course/city/state)
+3. **User selects course** → gameplay path reads from golfdb mirror (`GhinRuntime*` tables)
+  - Middleware remains sync/normalization boundary, not the gameplay runtime read source
+4. **If course is stale/missing in mirror**, sync path is triggered (callback/webhook/reconciliation work in progress)
+  - Middleware fetches from GHIN and normalizes deterministic payload
+  - Golf Match API upserts mirror rows atomically
+5. **User selects tee** → golfmatch-api returns mirror tee options
    - Returns: tees for Cedar Ridge; **pre-filter to player's gender** (e.g., show Blue M + White M for males)
-4. **User selects tee** (or accepts default) → calls middleware `GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M`
-   - Returns: 18-hole par/handicap baseline for Blue M
-5. **golfmatch-api upserts** into its canonical `Courses`, `Tees`, `CourseDefaults`, `HoleDefaults` tables
 6. **Fore Play creates Round** with:
    - Player: Clayton Cobb (GHIN 1234567, HI 9.4, M)
-   - Course: Cedar Ridge (GHIN-54321)
-   - Tee: Blue M (GHIN-TEE-1001, 71.4 rating, 136 slope)
+  - Course: mirrored GHIN course row (`GhinCourseId`)
+  - Tee: mirrored GHIN tee row (`GhinTeeId`)
    - Hole baselines: 18 holes with par/handicap
 
-**Upsert Logic in golfmatch-api** (to be implemented):
-```sql
--- Pseudo-code for golfmatch-api upsert flow
-BEGIN TRANSACTION;
-
-  -- 1. Insert/update Courses
-  MERGE INTO dbo.Courses AS target
-  USING (SELECT @ghinCourseId, @courseName, @city, @state, SYSUTCDATETIME()) AS source
-  ON target.SourceCourseKey = source.ghinCourseId
-  WHEN MATCHED THEN UPDATE ...
-  WHEN NOT MATCHED THEN INSERT ...;
-
-  -- 2. Insert/update Tees
-  MERGE INTO dbo.Tees AS target
-  USING (SELECT @courseId, @teeName, @baseTeeName) AS source
-  ON target.CourseID = source.courseId AND target.TeeName = source.teeName
-  WHEN MATCHED THEN UPDATE ...
-  WHEN NOT MATCHED THEN INSERT ...;
-
-  -- 3. Insert/update CourseDefaults (gender-aware)
-  -- Mark default tees from middleware isDefault flag
-  DELETE FROM dbo.CourseDefaults WHERE CourseID = @courseId;
-  INSERT INTO dbo.CourseDefaults (CourseID, Gender, DefaultTeeID)
-  SELECT @courseId, 'M', @defaultMenTeeId
-  UNION ALL
-  SELECT @courseId, 'W', @defaultWomenTeeId;
-
-  -- 4. Insert/update HoleDefaults
-  -- Only populate for the default tees per gender
-  MERGE INTO dbo.HoleDefaults AS target
-  USING (middleware hole data) AS source
-  ...;
-
-  -- 5. Insert/update HoleOverrides (if non-default tee differs from defaults)
-  ...;
-
-COMMIT TRANSACTION;
-```
+**Current implementation note:** one-time manual proof updated `GhinRuntimeCourses` for course `1385`. Automated callback/webhook sync into mirror tables remains pending in golfmatch-api.
 
 ---
 
@@ -380,14 +386,16 @@ TTL:       86400 (24 hours)
 **Phase 1.5** introduces a **two-database architecture** to support production GHIN data caching at scale:
 - **`golfdb`** (primary app DB): Hosts Golf Match canonical tables (UserProfiles, GlobalRoster, Events, Courses, Tees, course metadata)
 - **`golfdb-ghin-cache`** (separate cache DB): Hosts production GHIN data (GHIN_Courses, GHIN_Tees, GHIN_Holes with extended schema)
-- **`GhinCourseMapping`** (bridge table in golfdb): Maps GHIN IDs ↔ Golf Match IDs (no cross-DB FK; cross-DB joins managed by app layer)
+- **`GhinRuntime*` mirror tables in golfdb**: Runtime serving model for GHIN-backed course/tee/hole reads
+- **`GhinCourseMapping`** (legacy bridge candidate): retained pending explicit audit before cleanup/removal
 
 **Benefits:**
 1. **Data isolation:** GHIN cache can be refreshed/rebuilt independently without affecting Golf Match core tables
 2. **Scalability:** Cache DB can be scaled separately for read-heavy GHIN queries (thousands of course lookups daily)
 3. **TTL enforcement:** Extended schema supports automatic expiry (CachedAt + 24h TTL)
 4. **Production-ready:** Extended schema matches live USGA API responses (TeeSetSide awareness, F9/B9/18H ratings)
-5. **Non-breaking:** Phase 1.5 is additive; Phase 1 mock data in golfdb coexists during cutover
+5. **Deterministic location mapping:** cache writes map `CourseCity`/`CourseState` from GHIN payload and normalize `US-XX` to `XX`
+6. **Non-breaking:** Phase 1.5 is additive; Phase 1 mock data in golfdb coexists during cutover
 
 ### Two-Database Data Model
 
@@ -551,6 +559,7 @@ CREATE TABLE GhinCourseMapping (
 |-----------|--------|--------|---------|
 | **023_phase15_ghin_schema_extensions.sql** | golfdb | Executed + verified (Mar 24, 2026) | Add metadata + consent/verification + tournament flag |
 | **024_golfdb_ghin_course_mapping.sql** | golfdb | Executed + verified (Mar 24, 2026; FK syntax patched to `ON DELETE NO ACTION`) | Create GhinCourseMapping bridge table |
+| **026_create_golfdb_ghin_runtime_mirror_tables.sql** | golfdb | Authored (Mar 25, 2026), pending controlled execution | Create GhinRuntimeCourses/Tees/Holes runtime mirror tables + indexes |
 | **001_create_ghin_cache_tables.sql** | golfdb-ghin-cache | Executed + verified (Mar 24, 2026) | Create production GHIN cache schema |
 | **025_drop_golfdb_ghin_mock_tables.sql** (deferred) | golfdb | Blocked | Drop mock tables after cache DB goes live |
 
@@ -561,13 +570,18 @@ CREATE TABLE GhinCourseMapping (
 4. ✅ **Middleware wiring updated** — `src/services/database.js`, `src/config/secrets.js`, and `src/services/ghinClient.js` now route course queries to cache DB with runtime env resolution
 5. ✅ **Cache DB seeded** — Real GHIN course (`courseId=1385`) inserted and queryable
 6. ✅ **Local integration smoke** — search/course/tees/holes flow validated on localhost
-7. Run migration 025 (golfdb, after cutover verification) — drop mock tables
+7. ✅ **Location normalization validated** — cache now stores normalized city/state from GHIN `CourseCity`/`CourseState`
+8. ✅ **One-time mirror proof** — `GhinRuntimeCourses` for course `1385` manually updated from cache data
+9. ⏳ **Automated mirror sync pending** — callback/webhook/reconciliation implementation still required in golfmatch-api
+10. Run migration 025 (golfdb, after cutover verification) — drop mock tables
 
 **See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache for detailed execution runbook with cutover checkpoints and verification queries.**
 
 ---
 
 ## 4. Database Schema (golfdb + golfdb-ghin-cache)
+
+This section keeps legacy golfdb schema context for compatibility analysis. Runtime serving for GHIN-backed course data is the `GhinRuntime*` mirror model.
 
 ### Core Tables
 

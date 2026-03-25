@@ -248,6 +248,23 @@ function _parseHandicapIndex(raw) {
   return parseFloat(str);
 }
 
+function _normalizeState(raw) {
+  if (raw === null || raw === undefined) return null;
+  const state = String(raw).trim();
+  if (!state) return null;
+
+  if (/^[A-Za-z]{2}$/.test(state)) {
+    return state.toUpperCase();
+  }
+
+  const usPrefix = state.match(/^US[-_\s]?([A-Za-z]{2})$/i);
+  if (usPrefix) {
+    return usPrefix[1].toUpperCase();
+  }
+
+  return state;
+}
+
 function _normalizeCourse(data, courseId) {
   const facility = data.Facility ?? {};
   const teeSets = data.TeeSets ?? [];
@@ -255,8 +272,8 @@ function _normalizeCourse(data, courseId) {
   return {
     courseId,
     courseName: facility.FacilityName ?? null,
-    city: data.City ?? null,
-    state: data.State ?? null,
+    city: data.CourseCity ?? data.City ?? facility.City ?? null,
+    state: _normalizeState(data.CourseState ?? data.State ?? facility.State),
     country: data.Country ?? null,
     facilityId: facility.FacilityId != null ? String(facility.FacilityId) : null,
     lastUpdatedUtc: null,
