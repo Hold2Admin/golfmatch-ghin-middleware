@@ -50,11 +50,22 @@ function transformGhinTee(ghinTee) {
     baseTeeName: getBaseTeeName(ghinTee.teeName),
     gender: ghinTee.gender,
     
-    // Ratings
+    // Ratings — 18H
+    teeSetSide: ghinTee.teeSetSide ?? 'All18',
     courseRating: ghinTee.courseRating,
     slope: ghinTee.slope,
     par: ghinTee.par,
     yardage: ghinTee.yardage || null,
+    // Ratings — F9
+    courseRatingF9: ghinTee.courseRatingF9 ?? null,
+    slopeRatingF9: ghinTee.slopeRatingF9 ?? null,
+    parF9: ghinTee.parF9 ?? null,
+    yardageF9: ghinTee.yardageF9 ?? null,
+    // Ratings — B9
+    courseRatingB9: ghinTee.courseRatingB9 ?? null,
+    slopeRatingB9: ghinTee.slopeRatingB9 ?? null,
+    parB9: ghinTee.parB9 ?? null,
+    yardageB9: ghinTee.yardageB9 ?? null,
     
     // Hole Data
     holes: ghinTee.holes.map(transformGhinHole)

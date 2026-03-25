@@ -261,7 +261,11 @@ function _normalizeCourse(data, courseId) {
     facilityId: facility.FacilityId != null ? String(facility.FacilityId) : null,
     lastUpdatedUtc: null,
     tees: teeSets.map((tee, idx) => {
-      const totalRating = (tee.Ratings ?? []).find(r => String(r.RatingType).toLowerCase() === 'total') || {};
+      const ratings = tee.Ratings ?? [];
+      const totalRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'total') || {};
+      const frontRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'front') || {};
+      const backRating  = ratings.find(r => String(r.RatingType).toLowerCase() === 'back')  || {};
+
       const holes = (tee.Holes ?? []).map(h => ({
         holeNumber: h.Number,
         par: h.Par,
@@ -269,15 +273,27 @@ function _normalizeCourse(data, courseId) {
         yardage: h.Length
       }));
 
+      const f9Holes = holes.filter(h => h.holeNumber >= 1 && h.holeNumber <= 9);
+      const b9Holes = holes.filter(h => h.holeNumber >= 10 && h.holeNumber <= 18);
+
       return {
         teeId: tee.TeeSetRatingId != null ? String(tee.TeeSetRatingId) : `TEE-${idx + 1}`,
         teeName: tee.TeeSetRatingName ?? null,
         gender: (tee.Gender || '').toUpperCase().startsWith('M') ? 'M' : 'W',
         isDefault: idx === 0,
+        teeSetSide: tee.TeeSetSide ?? 'All18',
         courseRating: totalRating.CourseRating ?? null,
         slope: totalRating.SlopeRating ?? null,
         par: tee.TotalPar ?? null,
         yardage: tee.TotalYardage ?? null,
+        courseRatingF9: frontRating.CourseRating ?? null,
+        slopeRatingF9: frontRating.SlopeRating ?? null,
+        parF9: f9Holes.length === 9 ? f9Holes.reduce((s, h) => s + (h.par || 0), 0) : null,
+        yardageF9: f9Holes.length === 9 ? f9Holes.reduce((s, h) => s + (h.yardage || 0), 0) : null,
+        courseRatingB9: backRating.CourseRating ?? null,
+        slopeRatingB9: backRating.SlopeRating ?? null,
+        parB9: b9Holes.length === 9 ? b9Holes.reduce((s, h) => s + (h.par || 0), 0) : null,
+        yardageB9: b9Holes.length === 9 ? b9Holes.reduce((s, h) => s + (h.yardage || 0), 0) : null,
         holes
       };
     })
