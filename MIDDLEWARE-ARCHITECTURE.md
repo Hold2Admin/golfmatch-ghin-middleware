@@ -10,7 +10,7 @@
 
 The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfmatch-api)** with the **GHIN course management system**. It is **not** a replacement for Fore Play's core database; it is a **satellite service** that:
 
-1. **Caches GHIN course/tee/hole data** locally in Azure SQL (`golfdb`)
+1. **Caches GHIN course/tee/hole data** locally in Azure SQL (`golfdb-ghin-cache` — Phase 1.5+)
 2. **Exposes normalized endpoints** for Fore Play to fetch course baselines and player handicaps
 3. **Syncs nightly from live GHIN API** (future) to keep cache current
 4. **Eliminates per-user GHIN API calls** during search/play workflows (cost optimization)
@@ -18,11 +18,16 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 
 **Key Principle:** Fore Play never calls GHIN directly. All GHIN data flows through middleware.
 
+**Phase 1.5 Architecture Change (March 2026):** Migrated from single-database design to **two-database architecture**:
+- **`golfdb`** — Fore Play canonical application database (UserProfiles, GlobalRoster, Events, Courses, Tees, course metadata)
+- **`golfdb-ghin-cache`** — Separate production GHIN cache database (GHIN_Courses, GHIN_Tees, GHIN_Holes with extended schema)
+- **Bridge table** — `GhinCourseMapping` in golfdb maps GHIN IDs to Golf Match IDs (no cross-DB FK; cross-DB joins via app layer)
+
 ---
 
 ## 2. Integration with golfmatch-api (Fore Play)
 
-### 2.1 Current Workflow
+### 2.1 Current Workflow (Phase 1.5+)
 
 ```
 Fore Play Frontend (Vite @ localhost:5173)
@@ -36,13 +41,22 @@ Call Middleware Endpoints:
   ↓
 golfmatch-ghin-middleware (Azure App Service)
   ↓
-Azure SQL: golfdb (Fore Play canonical DB)
-  ├─ Courses table
-  ├─ Tees table (per-gender variants)
-  ├─ CourseDefaults table (gender-aware defaults)
-  ├─ HoleDefaults table (default tee hole baselines)
-  └─ HoleOverrides table (non-default tee customizations)
+┌─ Azure SQL: golfdb (Fore Play canonical DB) ─────────┬─ Azure SQL: golfdb-ghin-cache (Production GHIN Cache) ─┐
+│                                                        │                                                         │
+├─ Courses table                                        │ ├─ GHIN_Courses (courseId, facilityId, facilityName,   │
+├─ Tees table (per-gender variants)                     │ │        state, country, cachedAt, expiresAt, ...) ✓  │
+├─ CourseDefaults table (gender-aware defaults)         │ ├─ GHIN_Tees (teeId, courseId, teeName,              │
+├─ HoleDefaults table (default tee hole baselines)      │ │        teeSetSide[F9|B9|All18], courseRating18,     │
+├─ HoleOverrides table (non-default tee customizations) │ │        courseRatingF9, courseRatingB9,              │
+├─ GhinCourseMapping (bridge: GHIN IDs ↔ Golf Match IDs)│ │        slopes per side, par/yardage, cachedAt, ...) │
+├─ UserProfiles (metadata + GPA consent tracking)       │ ├─ GHIN_Holes (teeId, holeNumber, par, handicap,      │
+└─ GlobalRoster (metadata + identity verification)      │ │        yardage)                                      │
+                                                        │ └─ Indexes: state, facility, courseId, teeSetSide,    │
+                                                        │           expiry (TTL), gender, ...                    │
+                                                        └────────────────────────────────────────────────────────┘
 ```
+
+**Key Change (Phase 1.5):** Separate cache DB isolates GHIN data from Golf Match core tables.
 
 ### 2.2 Endpoints for golfmatch-api
 
@@ -359,7 +373,201 @@ TTL:       86400 (24 hours)
 
 ---
 
-## 4. Database Schema (golfdb)
+## 3.6 Phase 1.5 — Production Cache DB Architecture (March 2026)
+
+### Purpose & Rationale
+
+**Phase 1.5** introduces a **two-database architecture** to support production GHIN data caching at scale:
+- **`golfdb`** (primary app DB): Hosts Golf Match canonical tables (UserProfiles, GlobalRoster, Events, Courses, Tees, course metadata)
+- **`golfdb-ghin-cache`** (separate cache DB): Hosts production GHIN data (GHIN_Courses, GHIN_Tees, GHIN_Holes with extended schema)
+- **`GhinCourseMapping`** (bridge table in golfdb): Maps GHIN IDs ↔ Golf Match IDs (no cross-DB FK; cross-DB joins managed by app layer)
+
+**Benefits:**
+1. **Data isolation:** GHIN cache can be refreshed/rebuilt independently without affecting Golf Match core tables
+2. **Scalability:** Cache DB can be scaled separately for read-heavy GHIN queries (thousands of course lookups daily)
+3. **TTL enforcement:** Extended schema supports automatic expiry (CachedAt + 24h TTL)
+4. **Production-ready:** Extended schema matches live USGA API responses (TeeSetSide awareness, F9/B9/18H ratings)
+5. **Non-breaking:** Phase 1.5 is additive; Phase 1 mock data in golfdb coexists during cutover
+
+### Two-Database Data Model
+
+#### golfdb-ghin-cache Schema (Production GHIN Cache)
+
+**Table: GHIN_Courses**
+```sql
+CREATE TABLE GHIN_Courses (
+  CourseId              VARCHAR(50) PRIMARY KEY,
+  FacilityId            VARCHAR(50) NULL,       -- NEW: Facility identifier from USGA
+  FacilityName          NVARCHAR(200) NULL,     -- NEW: Facility name (e.g., "Cedar Ridge Golf Club")
+  CourseName            NVARCHAR(100) NOT NULL,
+  City                  NVARCHAR(100) NULL,
+  State                 NVARCHAR(50) NULL,
+  Country               NVARCHAR(50) NULL,
+  CachedAt              DATETIME2 DEFAULT GETUTCDATE(),
+  ExpiresAt             AS DATEADD(HOUR, 24, CachedAt) PERSISTED, -- NEW: 24-hour TTL
+  CacheSource           VARCHAR(50) DEFAULT 'USGA_API',   -- NEW: Source of cache (for audit)
+  CreatedAt             DATETIME2 DEFAULT GETUTCDATE(),
+  UpdatedAt             DATETIME2 DEFAULT GETUTCDATE(),
+  
+  INDEX IX_GHIN_Courses_State (State),
+  INDEX IX_GHIN_Courses_Facility (FacilityId),
+  INDEX IX_GHIN_Courses_ExpiresAt (ExpiresAt)
+);
+```
+
+**Table: GHIN_Tees** (Extended Schema)
+```sql
+CREATE TABLE GHIN_Tees (
+  TeeId                 VARCHAR(50) PRIMARY KEY,
+  CourseId              VARCHAR(50) NOT NULL,
+  TeeName               NVARCHAR(50) NOT NULL,
+  BaseTeeName           NVARCHAR(100) NULL,     -- Normalized name (e.g., "Blue")
+  TeeSetSide            VARCHAR(10) NOT NULL,   -- NEW: 'F9' (front 9) | 'B9' (back 9) | 'All18'
+  Gender                CHAR(1) NOT NULL,       -- 'M' or 'W'
+  IsDefault             BIT DEFAULT 0,
+  
+  -- Full 18-hole ratings (when TeeSetSide='All18')
+  CourseRating18        DECIMAL(4,1) NULL,
+  SlopeRating18         INT NULL,
+  Par18                 INT NULL,
+  Yardage18             INT NULL,
+  
+  -- Front 9 ratings (when TeeSetSide='F9' or 'All18')
+  CourseRatingF9        DECIMAL(4,1) NULL,
+  SlopeRatingF9         INT NULL,
+  ParF9                 INT NULL,
+  YardageF9             INT NULL,
+  
+  -- Back 9 ratings (when TeeSetSide='B9' or 'All18')
+  CourseRatingB9        DECIMAL(4,1) NULL,
+  SlopeRatingB9         INT NULL,
+  ParB9                 INT NULL,
+  YardageB9             INT NULL,
+  
+  CachedAt              DATETIME2 DEFAULT GETUTCDATE(),
+  ExpiresAt             AS DATEADD(HOUR, 24, CachedAt) PERSISTED,
+  CreatedAt             DATETIME2 DEFAULT GETUTCDATE(),
+  UpdatedAt             DATETIME2 DEFAULT GETUTCDATE(),
+  
+  CONSTRAINT FK_GHIN_Tees_Course FOREIGN KEY (CourseId) REFERENCES GHIN_Courses(CourseId),
+  INDEX IX_GHIN_Tees_CourseId (CourseId),
+  INDEX IX_GHIN_Tees_TeeSetSide (TeeSetSide),
+  INDEX IX_GHIN_Tees_Gender (Gender),
+  INDEX IX_GHIN_Tees_ExpiresAt (ExpiresAt)
+);
+```
+
+**Table: GHIN_Holes**
+```sql
+CREATE TABLE GHIN_Holes (
+  TeeId                 VARCHAR(50) NOT NULL,
+  HoleNumber            INT NOT NULL,          -- 1..18
+  Par                   INT NOT NULL,          -- 3, 4, or 5
+  Handicap              INT NOT NULL,          -- 1..18 (handicap allocation)
+  Yardage               INT NOT NULL,
+  
+  PRIMARY KEY (TeeId, HoleNumber),
+  CONSTRAINT FK_GHIN_Holes_Tee FOREIGN KEY (TeeId) REFERENCES GHIN_Tees(TeeId),
+  CONSTRAINT CK_GHIN_Holes_HoleNumber CHECK (HoleNumber BETWEEN 1 AND 18),
+  INDEX IX_GHIN_Holes_TeeId (TeeId)
+);
+```
+
+#### golfdb Schema Extensions (Phase 1.5)
+
+**UserProfiles Additions** (GPA Consent Tracking)
+```sql
+ALTER TABLE UserProfiles ADD
+  GHINRevisionDate      NVARCHAR(50) NULL,     -- GHIN last revision date from API
+  GHINLowIndex          DECIMAL(5,1) NULL,     -- Lowest handicap index on record
+  GHINClubId            NVARCHAR(50) NULL,     -- Home club GHIN ID
+  GHINAssociationId     NVARCHAR(50) NULL,     -- Regional association (MGA, SCGA, etc.)
+  GHINConsentStatus     NVARCHAR(20) DEFAULT 'none',  -- NEW: none | pending | approved | inactive | rejected
+  GHINConsentRequestedAt DATETIME2 NULL,       -- When consent request was sent
+  GHINConsentUpdatedAt  DATETIME2 NULL,        -- Last consent state change
+  INDEX IX_UserProfiles_GHINConsent (GHINConsentStatus);
+```
+
+**GlobalRoster Additions** (Identity Verification Only — No Consent)
+```sql
+ALTER TABLE GlobalRoster ADD
+  GHINRevisionDate      NVARCHAR(50) NULL,
+  GHINLowIndex          DECIMAL(5,1) NULL,
+  GHINClubId            NVARCHAR(50) NULL,
+  GHINAssociationId     NVARCHAR(50) NULL,
+  GHINIdentityVerified  BIT DEFAULT 0,         -- NEW: Verified flag (no consent flow)
+  GHINIdentityVerifiedAt DATETIME2 NULL,       -- Verification timestamp
+  INDEX IX_GlobalRoster_GHINVerified (GHINIdentityVerified);
+```
+
+**Events Additions**
+```sql
+ALTER TABLE Events ADD
+  IsTournament          BIT DEFAULT 0;         -- NEW: Marks tournament events subject to GHIN handicap rules
+```
+
+**New Bridge Table: GhinCourseMapping**
+```sql
+CREATE TABLE GhinCourseMapping (
+  GhinCourseMappingId   INT PRIMARY KEY IDENTITY(1,1),
+  GhinCourseId          VARCHAR(50) NOT NULL,  -- ID from golfdb-ghin-cache
+  GhinTeeId             VARCHAR(50) NULL,      -- ID from golfdb-ghin-cache (optional)
+  GolfMatchCourseId     INT NOT NULL,          -- FK to golfdb Courses
+  GolfMatchTeeId        INT NULL,              -- FK to golfdb Tees (optional)
+  CreatedAt             DATETIME2 DEFAULT GETUTCDATE(),
+  UpdatedAt             DATETIME2 DEFAULT GETUTCDATE(),
+  
+  CONSTRAINT FK_GhinCourseMapping_Course FOREIGN KEY (GolfMatchCourseId) REFERENCES Courses(CourseId),
+  CONSTRAINT FK_GhinCourseMapping_Tee FOREIGN KEY (GolfMatchTeeId) REFERENCES Tees(TeeId),
+  CONSTRAINT CK_GhinCourseMapping_CourseMapping CHECK (
+    (GhinTeeId IS NULL AND GolfMatchTeeId IS NULL) OR 
+    (GhinTeeId IS NOT NULL AND GolfMatchTeeId IS NOT NULL)
+  ),
+  
+  UNIQUE (GhinCourseId, GhinTeeId),
+  INDEX IX_GhinCourseMapping_GolfMatchCourse (GolfMatchCourseId),
+  INDEX IX_GhinCourseMapping_GolfMatchTee (GolfMatchTeeId),
+  INDEX IX_GhinCourseMapping_Reverse (GolfMatchCourseId, GhinCourseId)
+);
+```
+
+### Authorization Model Separation
+
+**Phase 1.5 Design Decision:** Separate authorization models for two user classes:
+
+| Aspect | App Users (UserProfiles) | Club Members (GlobalRoster) |
+|--------|--------------------------|----------------------------|
+| **Consent Model** | GPA consent required (none → pending → approved \| inactive \| rejected) | No consent (identity verification only) |
+| **Verification** | (via UserProfiles.UserID FK) | GHINIdentityVerified + timestamp |
+| **Email Approval Flow** | Yes (request_golfer_product_access via USGA API) | No (GHIN#+LastName match only) |
+| **Use Case** | App users granted access to live handicap index | Club members in rosters (unlinked, GHIN# known) |
+| **Fallback Policy** | Position A enforcement: consent required for live index | Position A enforcement: identity verification required for dynamic indexes |
+
+### Phase 1.5 Migration Suite
+
+**Location:** `c:\dev\golf-match-local-cache\sql\migrations\` + cache DB migrations
+
+| Migration | Target | Status | Purpose |
+|-----------|--------|--------|---------|
+| **023_phase15_ghin_schema_extensions.sql** | golfdb | Ready | Add metadata + consent/verification + tournament flag |
+| **024_golfdb_ghin_course_mapping.sql** | golfdb | Ready | Create GhinCourseMapping bridge table |
+| **001_create_ghin_cache_tables.sql** | golfdb-ghin-cache | Ready | Create production GHIN cache schema |
+| **025_drop_golfdb_ghin_mock_tables.sql** (deferred) | golfdb | Blocked | Drop mock tables after cache DB goes live |
+
+**Execution Sequence (Mandatory Order):**
+1. Run migration 023 (golfdb) — adds metadata + consent/verification columns
+2. Run migration 024 (golfdb) — creates GhinCourseMapping bridge
+3. Run cache DB migration 001 (golfdb-ghin-cache) — creates GHIN_Courses/Tees/Holes with extended schema
+4. **Update middleware wiring** — Configure `src/services/database.js` to read from golfdb-ghin-cache for course queries
+5. **Populate cache DB** — Insert 1–2 real sandbox courses via middleware GHIN API client
+6. **Integration testing** — Verify course lookups, tee ratings (F9/B9/18H), score posting
+7. Run migration 025 (golfdb, after cutover verification) — drop mock tables
+
+**See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache for detailed execution runbook with cutover checkpoints and verification queries.**
+
+---
+
+## 4. Database Schema (golfdb + golfdb-ghin-cache)
 
 ### Core Tables
 
@@ -577,13 +785,24 @@ GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M
 - ✅ Outbound allowlist gate implemented in `usaGhinApiClient` with explicit deny behavior
 - ✅ Phase 1 smoke tests completed end-to-end (player + course paths)
 
+### Phase 1.5 (In Progress — March 2026)
+- ✅ **Two-database architecture designed** — golfdb (app) + golfdb-ghin-cache (production GHIN data)
+- ✅ **Extended cache schema authored** — GHIN_Courses/Tees/Holes with TeeSetSide awareness, F9/B9/18H ratings, 24h TTL
+- ✅ **GhinCourseMapping bridge table designed** — maps GHIN IDs ↔ Golf Match IDs (no cross-DB FK)
+- ✅ **Metadata + consent/verification columns designed** — UserProfiles (GPA consent), GlobalRoster (identity verification only)
+- ✅ **Migration suite authored** — 3 live migrations (023, 024, cache DB 001) + 1 deferred (025); all idempotent
+- 🔄 **Middleware integration pending** — Update `src/services/database.js` to read from golfdb-ghin-cache for course queries
+- 🔄 **Cache DB population pending** — Insert real GHIN data via middleware API client
+
+**See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache workspace for complete migration suite details, execution sequence, and cutover checkpoints.**
+
 ### Phase 2 (Planned — Course Nightly Sync)
 - 🔄 Implement nightly background job to:
   1. Call live GHIN API for course listing (filtered by state/region)
-  2. Fetch each course's tees and hole baselines
+  2. Fetch each course's tees and hole baselines with TeeSetSide & F9/B9/18H ratings
   3. Compute SHA256 hash of fetched data to detect changes
-  4. Upsert into `Courses`, `Tees`, `TeeRatings`, `HoleDefaults` tables
-  5. Trigger `usp_ApplyHoleDefaultsToAllTeesByGender` to auto-populate non-default tees
+  4. Upsert into `golfdb-ghin-cache` tables (GHIN_Courses, GHIN_Tees, GHIN_Holes)
+  5. Update GhinCourseMapping as new courses onboard
   6. Log changes to Application Insights for monitoring
 
 ### Phase 3 (Planned — Player Handicap Sync)
@@ -647,17 +866,97 @@ Runtime mode is driven by GHIN sandbox credential presence:
 - Missing credentials -> MOCK mode
 
 ### Azure Deployment
+
+**Key Change (Phase 1.5):** Middleware now connects to **two** Azure SQL databases.
+
 - **Runtime:** Node.js 20.x on Linux App Service
+- **Primary Database:** `golfdb` on `golfmatchserver.database.windows.net` (Fore Play canonical DB)
+- **Cache Database:** `golfdb-ghin-cache` on `golfmatchserver.database.windows.net` (Production GHIN cache — separate logical DB)
 - **Secrets:** Azure Key Vault (DefaultAzureCredential)
   - `APPLICATIONINSIGHTS_CONNECTION_STRING`
-  - `GHIN-SANDBOX-EMAIL`
-  - `GHIN-SANDBOX-PASSWORD`
+  - `GHIN-SANDBOX-EMAIL` / `GHIN-SANDBOX-PASSWORD`
   - `GHIN-API-BASE-URL`
-  - `AZURE_SQL_USER` / `AZURE_SQL_PASSWORD`
-  - `REDIS_PASSWORD`
-- **Database:** `golfdb` on `golfmatchserver.database.windows.net`
-- **Cache:** Azure Redis (TLS, managed identity)
+  - `AZURE_SQL_USER` / `AZURE_SQL_PASSWORD` (both databases use same server + credentials)
+  - `REDIS_PASSWORD` (Phase 3)
+- **Cache:** Azure Redis (TLS, managed identity — Phase 3)
 - **CI/CD:** GitHub Actions — Run From Package via Azure Blob Storage (see below)
+
+**Middleware Connection String (for golfmatch-api):**
+```
+https://golfmatch-ghin-middleware.azurewebsites.net/api/v1
+```
+
+**Database Configuration in Middleware** (`src/services/database.js`):
+```javascript
+// Primary App DB (golfdb)
+const appDb = sql.ConnectionPool({
+  server: 'golfmatchserver.database.windows.net',
+  database: 'golfdb',
+  authentication: {
+    type: 'azure-active-directory-msi-app-service'
+  },
+  options: {
+    encrypt: true,
+    trustServerCertificate: false
+  }
+});
+
+// Phase 1.5+: Cache DB (golfdb-ghin-cache)
+const cacheDb = sql.ConnectionPool({
+  server: 'golfmatchserver.database.windows.net',
+  database: 'golfdb-ghin-cache',
+  authentication: {
+    type: 'azure-active-directory-msi-app-service'
+  },
+  options: {
+    encrypt: true,
+    trustServerCertificate: false
+  }
+});
+
+module.exports = { appDb, cacheDb };
+```
+
+### Schema-Tools Secret Rotation Runbook (Critical)
+
+This is the historical issue that broke schema exports until credentials were rotated and Key Vault names were aligned.
+
+**Where the scripts live:** `C:\dev\golf-match-local-cache\schema-tools`
+
+**Scripts affected:**
+- `Export-Schema-Full.js` (golfdb export)
+- `Export-Schema-CodeObjects.js` (golfdb export)
+- `Export-CacheDB-Schema-Full.js` (golfdb-ghin-cache export)
+- `Export-CacheDB-Schema-CodeObjects.js` (golfdb-ghin-cache export)
+
+**Credential resolution behavior:**
+1. golfdb exporters call `api/shared/secretsLoader.js` and expect:
+  - `AZURE-SQL-USER`
+  - `AZURE-SQL-PASSWORD`
+  - `AZURE-SQL-SERVER`
+  - `AZURE-SQL-DATABASE`
+2. cache DB exporters call `loadSecrets()` and then explicit cache lookups from Key Vault `https://golfmatch-secrets.vault.azure.net`.
+3. cache DB exporters accept either secret naming style for compatibility:
+  - hyphen style: `GHIN-CACHE-DB-SERVER`, `GHIN-CACHE-DB-NAME`, `GHIN-CACHE-DB-USER`, `GHIN-CACHE-DB-PASSWORD`
+  - underscore style: `GHIN_CACHE_DB_SERVER`, `GHIN_CACHE_DB_NAME`, `GHIN_CACHE_DB_USER`, `GHIN_CACHE_DB_PASSWORD`
+
+**Rotation checklist (do this exactly):**
+1. Rotate SQL login password on Azure SQL for the login used by schema exports.
+2. Immediately update Key Vault secrets:
+  - `AZURE-SQL-PASSWORD` (for golfdb exporters)
+  - `GHIN-CACHE-DB-PASSWORD` (for cache DB exporters)
+3. Keep server/name/user secrets current for both target DBs.
+4. Re-run both export paths to validate:
+  - `node schema-tools/Export-Schema-Full.js`
+  - `node schema-tools/Export-Schema-CodeObjects.js`
+  - `node schema-tools/Export-CacheDB-Schema-Full.js`
+  - `node schema-tools/Export-CacheDB-Schema-CodeObjects.js`
+
+**Known failure signatures:**
+- `Missing cache DB credentials from Key Vault (GHIN-CACHE-DB-SERVER/NAME/USER/PASSWORD).`
+- SQL authentication failures after password rotation if Key Vault values were not updated in lockstep.
+
+**Operational rule:** Treat SQL password rotation and Key Vault secret updates as one atomic change window. Do not rotate one without the other.
 
 ### CI/CD: Run From Package
 
@@ -679,11 +978,6 @@ The App Service SCM endpoint (`Kudu-Deny-All` at priority 1) is intentionally bl
 - `golfmatch-github-actions` SP → Storage Blob Data Contributor on `golfmatchstorage` (upload)
 - `golfmatch-github-actions` SP → Contributor on `RG_GolfMatch` (set app settings via ARM)
 - App Service system-assigned managed identity (`8844f213-...`) → Storage Blob Data Reader on `golfmatchstorage` (fetch zip at startup)
-
-### Connection String (for golfmatch-api)
-```
-https://golfmatch-ghin-middleware.azurewebsites.net/api/v1
-```
 
 ---
 
