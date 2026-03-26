@@ -14,8 +14,19 @@ const { persistReconciliationRun } = require('./reconciliationHistoryService');
 const logger = createLogger('courseSyncService');
 const CACHE_TTL_DAYS = 365;
 let hashColumnsEnsured = false;
+let cacheWritesInFlight = 0;
+const cacheWriteWaiters = [];
 let mirrorCallbacksInFlight = 0;
 const mirrorCallbackWaiters = [];
+
+function getCacheWriteConcurrency() {
+  const configured = Number(
+    process.env.GHIN_CACHE_WRITE_CONCURRENCY
+    || process.env.GHIN_RECONCILIATION_CONCURRENCY
+    || 4
+  );
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 1;
+}
 
 function getMirrorCallbackConcurrency() {
   const configured = Number(
@@ -28,6 +39,78 @@ function getMirrorCallbackConcurrency() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getCacheWriteMaxAttempts() {
+  const configured = Number(process.env.GHIN_CACHE_WRITE_MAX_ATTEMPTS || 3);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 3;
+}
+
+function isRetryableCacheWriteError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('deadlocked on lock resources')
+    || message.includes('timeout: request failed to complete')
+    || message.includes('request failed to complete in')
+    || message.includes('etimeout')
+  );
+}
+
+async function runWithCacheWriteRetry(courseId, operation) {
+  const maxAttempts = getCacheWriteMaxAttempts();
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await runWithCacheWriteSlot(operation);
+    } catch (error) {
+      const shouldRetry = isRetryableCacheWriteError(error) && attempt < maxAttempts;
+      if (!shouldRetry) {
+        throw error;
+      }
+
+      logger.warn('Cache write failed, retrying', {
+        courseId,
+        attempt,
+        maxAttempts,
+        error: error.message
+      });
+      await sleep(250 * attempt);
+    }
+  }
+
+  throw new Error(`Cache write failed after ${maxAttempts} attempts for course ${courseId}`);
+}
+
+function acquireCacheWriteSlot() {
+  return new Promise((resolve) => {
+    const tryAcquire = () => {
+      const maxConcurrent = getCacheWriteConcurrency();
+      if (cacheWritesInFlight < maxConcurrent) {
+        cacheWritesInFlight += 1;
+        resolve(() => {
+          cacheWritesInFlight = Math.max(0, cacheWritesInFlight - 1);
+          const next = cacheWriteWaiters.shift();
+          if (next) {
+            next();
+          }
+        });
+        return;
+      }
+
+      cacheWriteWaiters.push(tryAcquire);
+    };
+
+    tryAcquire();
+  });
+}
+
+async function runWithCacheWriteSlot(fn) {
+  const release = await acquireCacheWriteSlot();
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 function acquireMirrorCallbackSlot() {
@@ -139,6 +222,51 @@ function buildTeeStructurePayload(payload) {
   };
 }
 
+function validateCourseMirrorShape(course) {
+  const courseId = String(course?.courseId || '').trim();
+  const courseName = String(course?.courseName || '').trim();
+  const tees = Array.isArray(course?.tees) ? course.tees : [];
+
+  if (!courseId) {
+    throw new Error('Missing required field: ghinCourseId');
+  }
+
+  if (!courseName) {
+    throw new Error(`Course ${courseId} missing required field: courseName`);
+  }
+
+  if (!tees.length) {
+    throw new Error(`Course ${courseId} missing required field: tees[]`);
+  }
+
+  tees.forEach((tee, teeIndex) => {
+    const teeId = String(tee?.teeId || '').trim();
+    const teeName = String(tee?.teeName || '').trim();
+    const holes = Array.isArray(tee?.holes) ? tee.holes : [];
+
+    if (!teeId) {
+      throw new Error(`Course ${courseId} tees[${teeIndex}] missing ghinTeeId`);
+    }
+
+    if (!teeName) {
+      throw new Error(`Course ${courseId} tees[${teeIndex}] missing teeName`);
+    }
+
+    if (!holes.length) {
+      throw new Error(`Course ${courseId} tees[${teeIndex}] missing holes[]`);
+    }
+
+    holes.forEach((hole, holeIndex) => {
+      const holeNumber = Number(hole?.holeNumber);
+      const par = Number(hole?.par);
+
+      if (!Number.isFinite(holeNumber) || !Number.isFinite(par)) {
+        throw new Error(`Course ${courseId} tees[${teeIndex}].holes[${holeIndex}] missing holeNumber/par`);
+      }
+    });
+  });
+}
+
 function validateCourseHoleHandicaps(course) {
   const missing = [];
 
@@ -166,6 +294,11 @@ function validateCourseHoleHandicaps(course) {
   throw new Error(
     `GHIN course ${course.courseId} is missing hole handicap/allocation data for ${missing.length} hole rows across ${teeIds} tee set(s). Sample: ${sample}`
   );
+}
+
+function validateCourseForSync(course) {
+  validateCourseMirrorShape(course);
+  validateCourseHoleHandicaps(course);
 }
 
 async function ensureCourseHashColumns() {
@@ -582,24 +715,47 @@ async function syncMirrorForCourse(course) {
 
 async function processCourseSync(course, options = {}) {
   const detectNoop = options.detectNoop !== false;
+  const syncMirror = options.syncMirror !== false;
+  const startedAtMs = Date.now();
+  const timings = {
+    validationDurationMs: 0,
+    noopDetectionDurationMs: 0,
+    upsertDurationMs: 0,
+    mirrorDurationMs: 0,
+    totalDurationMs: 0
+  };
+
+  function finalizeResult(result) {
+    return {
+      ...result,
+      timings: {
+        ...timings,
+        totalDurationMs: Date.now() - startedAtMs
+      }
+    };
+  }
 
   recordReceived();
-  validateCourseHoleHandicaps(course);
-
-  const incomingPayload = buildMirrorPayload(course);
-  const incomingHash = hashPayload(incomingPayload);
-  const incomingTeeStructureHash = hashPayload(buildTeeStructurePayload(incomingPayload));
-  const incomingHashes = {
-    payloadHash: incomingHash,
-    teeStructureHash: incomingTeeStructureHash
-  };
-  let cachedPayload = null;
-  let useHeaderOnlyUpsert = false;
 
   try {
+    const validationStartedAtMs = Date.now();
+    validateCourseForSync(course);
+    timings.validationDurationMs = Date.now() - validationStartedAtMs;
+
+    const incomingPayload = buildMirrorPayload(course);
+    const incomingHash = hashPayload(incomingPayload);
+    const incomingTeeStructureHash = hashPayload(buildTeeStructurePayload(incomingPayload));
+    const incomingHashes = {
+      payloadHash: incomingHash,
+      teeStructureHash: incomingTeeStructureHash
+    };
+    let cachedPayload = null;
+    let useHeaderOnlyUpsert = false;
+
     await ensureCourseHashColumns();
 
     if (detectNoop) {
+      const noopDetectionStartedAtMs = Date.now();
       const cachedHashes = await getCachedCourseHashes(course.courseId);
       const hashesMissingFromCache = !cachedHashes?.payloadHash || !cachedHashes?.teeStructureHash;
       cachedPayload = await buildMirrorPayloadFromCache(course.courseId);
@@ -623,12 +779,14 @@ async function processCourseSync(course, options = {}) {
           hash: incomingHash
         });
 
-        return {
+        timings.noopDetectionDurationMs = Date.now() - noopDetectionStartedAtMs;
+
+        return finalizeResult({
           status: 'nochange',
           skipped: true,
           reason: 'hash_match',
           hash: incomingHash
-        };
+        });
       }
 
       if (cachedTeeStructureHash && cachedTeeStructureHash === incomingTeeStructureHash) {
@@ -647,53 +805,69 @@ async function processCourseSync(course, options = {}) {
             hash: incomingHash
           });
 
-          return {
+          timings.noopDetectionDurationMs = Date.now() - noopDetectionStartedAtMs;
+
+          return finalizeResult({
             status: 'nochange',
             skipped: true,
             reason: 'hash_match',
             hash: incomingHash
-          };
+          });
         }
 
         if (!useHeaderOnlyUpsert && cachedHashes?.teeStructureHash) {
           useHeaderOnlyUpsert = cachedHashes.teeStructureHash === incomingTeeStructureHash;
         }
       }
+
+      timings.noopDetectionDurationMs = Date.now() - noopDetectionStartedAtMs;
     }
 
     const upsertStartedAtMs = Date.now();
-    if (useHeaderOnlyUpsert) {
-      await upsertCourseHeaderToCache(course, incomingHashes);
-    } else {
-      await upsertCourseToCache(course, incomingHashes);
-    }
-    const upsertDurationMs = Date.now() - upsertStartedAtMs;
+    await runWithCacheWriteRetry(course.courseId, async () => {
+      if (useHeaderOnlyUpsert) {
+        await upsertCourseHeaderToCache(course, incomingHashes);
+      } else {
+        await upsertCourseToCache(course, incomingHashes);
+      }
+    });
+    timings.upsertDurationMs = Date.now() - upsertStartedAtMs;
 
-    const mirrorStartedAtMs = Date.now();
-    const mirrorResult = await syncMirrorForCourse(course);
-    const mirrorDurationMs = Date.now() - mirrorStartedAtMs;
+    let mirrorResult = null;
+
+    if (syncMirror) {
+      const mirrorStartedAtMs = Date.now();
+      mirrorResult = await syncMirrorForCourse(course);
+      timings.mirrorDurationMs = Date.now() - mirrorStartedAtMs;
+    }
 
     recordProcessedUpdated();
 
     logger.info('Course webhook sync completed', {
       courseId: course.courseId,
       teeCount: Array.isArray(course.tees) ? course.tees.length : 0,
-      mirrorStatus: mirrorResult?.status || 'ok',
+      mirrorStatus: syncMirror ? (mirrorResult?.status || 'ok') : 'skipped',
       hash: incomingHash,
       upsertMode: useHeaderOnlyUpsert ? 'header-only' : 'full',
-      upsertDurationMs,
-      mirrorDurationMs
+      upsertDurationMs: timings.upsertDurationMs,
+      mirrorDurationMs: timings.mirrorDurationMs,
+      totalDurationMs: Date.now() - startedAtMs
     });
 
-    return {
-      status: mirrorResult?.status || 'updated',
+    return finalizeResult({
+      status: syncMirror ? (mirrorResult?.status || 'updated') : 'cache-updated',
       skipped: false,
       hash: incomingHash,
       upsertMode: useHeaderOnlyUpsert ? 'header-only' : 'full',
-      mirror: mirrorResult
-    };
+      mirror: mirrorResult,
+      mirrorSkipped: !syncMirror
+    });
   } catch (error) {
     recordFailed();
+    error.syncTimings = {
+      ...timings,
+      totalDurationMs: Date.now() - startedAtMs
+    };
     throw error;
   }
 }
@@ -917,5 +1091,6 @@ module.exports = {
   reconcileCourses,
   upsertCourseToCache,
   upsertCourseHeaderToCache,
-  syncMirrorForCourse
+  syncMirrorForCourse,
+  validateCourseForSync
 };

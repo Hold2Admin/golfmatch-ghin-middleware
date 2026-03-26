@@ -1,8 +1,8 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** March 25, 2026  
+**Last Updated:** March 26, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — mirror-first runtime direction, cache-to-mirror sync automation, and additive course-name/schema hardening are validated; runtime read-path cutover verification is next
+**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, and additive course-name/schema hardening are validated; the remaining scale gap is replacing stage 1 per-course CacheDB writes with a bulk CacheDB writer
 
 ---
 
@@ -24,7 +24,7 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - **Runtime mirror in golfdb** — `GhinRuntimeCourses`, `GhinRuntimeTees`, `GhinRuntimeHoles` are the locked runtime serving model for GHIN-backed course reads
 - **Bridge table note** — `GhinCourseMapping` exists from earlier design and is retained pending audit before any cleanup/removal
 
-### Current validated progress (Mar 25, 2026)
+### Current validated progress (Mar 26, 2026)
 
 - Cache DB seed and smoke flow validated with real GHIN course `1385` (search -> tees -> holes).
 - Course location normalization was corrected: read `CourseCity` / `CourseState` from GHIN payload and normalize state `US-XX` -> `XX`.
@@ -36,7 +36,10 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - Additive schema hardening is complete: `ShortCourseName` is now persisted in both cache and golfdb runtime mirror, while `CourseName` is the composed runtime/app label `<FacilityName> - <ShortCourseName>`.
 - Representative multi-course verification completed in both DBs for `14914`, `14917`, and `10820`.
 - Known explicit source-data blocker remains `14916`: GHIN omits hole `Allocation`, and middleware intentionally fails fast rather than synthesizing invalid data.
-- Remaining major gap is runtime read-path cutover verification inside Golf Match gameplay/admin reads.
+- State-partition discovery/backfill is implemented to enumerate unknown GHIN course IDs before sync.
+- The pipeline is now split cleanly: stage 1 validates and writes canonical GHIN data into CacheDB, and stage 2 bulk-projects CacheDB rows into golfdb runtime tables.
+- Multi-state proving confirmed the stage 2 bulk projector is fast enough; the remaining bottleneck is stage 1 per-course CacheDB write throughput.
+- Remaining major middleware gap is a bulk stage 1 CacheDB writer that preserves per-course validation failures plus checkpoint/resume semantics.
 
 ---
 
@@ -257,7 +260,7 @@ See [src/mocks/ghinData.js](src/mocks/ghinData.js) for full mock data.
   - Tee: mirrored GHIN tee row (`GhinTeeId`)
    - Hole baselines: 18 holes with par/handicap
 
-**Current implementation note:** automated callback/webhook/reconciliation sync into golfdb mirror tables is implemented and validated. The next verification step is proving all GHIN-backed gameplay/admin reads now resolve from `GhinRuntime*` rather than middleware runtime reads or legacy default/override tables.
+**Current implementation note:** automated callback/webhook/reconciliation sync into golfdb mirror tables is implemented and validated, and GHIN-backed gameplay/admin reads now resolve from `GhinRuntime*` rather than middleware runtime reads. The next middleware implementation step is replacing per-course CacheDB writes with a set-based stage 1 bulk writer so full-catalog backfill can run at national scale.
 
 ---
 

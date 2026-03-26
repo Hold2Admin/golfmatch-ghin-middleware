@@ -2,7 +2,7 @@
 
 Middleware service for transforming and securing USGA GHIN/WHS API data for the Fore Play golf pairing application.
 
-Current checkpoint: live GHIN course/player connectivity, cache DB writes, golfdb runtime-mirror callback sync, webhook lifecycle validation, scheduled reconciliation, and additive `ShortCourseName` hardening are complete and validated. The next milestone is runtime read-path cutover verification in Golf Match.
+Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, and additive `ShortCourseName` hardening are complete and validated. Golf Match runtime reads are already cut over to golfdb mirror tables. The current middleware milestone is replacing stage 1 per-course CacheDB writes with a bulk CacheDB writer so national-scale catalog population is sustainable.
 
 ## Architecture
 
@@ -137,8 +137,9 @@ Critical secrets stored in Azure Key Vault:
 
 ## Development Phases
 
-- **Phase 1 / 1.5** (Current checkpoint): Live GHIN connectivity, separate cache DB, runtime mirror sync, webhook/reconciliation automation, additive course-name hardening
-- **Phase 2**: Golf Match runtime read-path cutover and admin GHIN import UX
+- **Phase 1 / 1.5** (Validated): Live GHIN connectivity, separate cache DB, runtime mirror sync, webhook/reconciliation automation, additive course-name hardening
+- **Phase 2** (Validated core flow): Golf Match runtime read-path cutover, state-partition catalog discovery/backfill, and CacheDB -> GolfDB bulk runtime projection
+- **Phase 2 Remaining Work** (Current): Replace stage 1 per-course CacheDB writes with a bulk CacheDB writer, then resume broader catalog backfill at national scale
 - **Phase 3**: Live handicap pulls and player caching
 - **Phase 4+**: Expanded score-posting and operational hardening
 

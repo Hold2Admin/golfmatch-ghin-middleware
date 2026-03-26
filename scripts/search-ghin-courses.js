@@ -2,10 +2,15 @@
  * Search for GHIN courses by name and optional state using the live USGA API.
  * Shows which results are already in the cache DB.
  *
- * Usage: node scripts/search-ghin-courses.js <name> [state]
+ * Usage:
+ *   node scripts/search-ghin-courses.js <name> [state]
+ *   node scripts/search-ghin-courses.js --state=US-NY
+ *   node scripts/search-ghin-courses.js --state=US-NY --count-only
+ *   node scripts/search-ghin-courses.js --name="oak" --state=IL
  * Examples:
  *   node scripts/search-ghin-courses.js "oak"
  *   node scripts/search-ghin-courses.js "indian hill" IL
+ *   node scripts/search-ghin-courses.js --state=US-NY
  *
  * To seed a result into cache:
  *   node scripts/seed-ghin-course.js <courseId>
@@ -14,13 +19,92 @@
 const sql = require('mssql');
 const { loadSecrets } = require('../src/config/secrets');
 
-async function run() {
-  const name  = process.argv[2];
-  const state = process.argv[3] || null;
+const ALL_US_STATES = [
+  'US-AL', 'US-AK', 'US-AZ', 'US-AR', 'US-CA', 'US-CO', 'US-CT', 'US-DE', 'US-FL', 'US-GA',
+  'US-HI', 'US-ID', 'US-IL', 'US-IN', 'US-IA', 'US-KS', 'US-KY', 'US-LA', 'US-ME', 'US-MD',
+  'US-MA', 'US-MI', 'US-MN', 'US-MS', 'US-MO', 'US-MT', 'US-NE', 'US-NV', 'US-NH', 'US-NJ',
+  'US-NM', 'US-NY', 'US-NC', 'US-ND', 'US-OH', 'US-OK', 'US-OR', 'US-PA', 'US-RI', 'US-SC',
+  'US-SD', 'US-TN', 'US-TX', 'US-UT', 'US-VT', 'US-VA', 'US-WA', 'US-WV', 'US-WI', 'US-WY'
+];
 
-  if (!name) {
+async function mapLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function runWorker() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, Math.max(items.length, 1)) }, () => runWorker());
+  await Promise.all(workers);
+  return results;
+}
+
+function chunk(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function parseArgs(argv) {
+  const positionals = [];
+  let name = null;
+  let state = null;
+  let perPage = 50;
+  let countOnly = false;
+
+  for (const arg of argv) {
+    if (arg === '--count-only' || arg === '--count') {
+      countOnly = true;
+      continue;
+    }
+    if (arg.startsWith('--name=')) {
+      name = arg.slice('--name='.length).trim() || null;
+      continue;
+    }
+    if (arg.startsWith('--state=')) {
+      state = arg.slice('--state='.length).trim() || null;
+      continue;
+    }
+    if (arg.startsWith('--per-page=')) {
+      const parsed = Number(arg.slice('--per-page='.length));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        perPage = Math.floor(parsed);
+      }
+      continue;
+    }
+
+    positionals.push(arg);
+  }
+
+  if (!name && positionals.length > 0) {
+    name = positionals[0];
+  }
+  if (!state && positionals.length > 1) {
+    state = positionals[1];
+  }
+
+  return { name, state, perPage, countOnly };
+}
+
+async function run() {
+  const { name, state, perPage, countOnly } = parseArgs(process.argv.slice(2));
+
+  if (!name && !state && !countOnly) {
     console.error('Usage: node scripts/search-ghin-courses.js <name> [state]');
-    console.error('  Example: node scripts/search-ghin-courses.js "oak" IL');
+    console.error('   or: node scripts/search-ghin-courses.js --state=US-NY');
+    console.error('   or: node scripts/search-ghin-courses.js --state=US-NY --count-only');
+    console.error('   or: node scripts/search-ghin-courses.js --count-only');
+    console.error('   or: node scripts/search-ghin-courses.js --name="oak" --state=IL');
     process.exit(1);
   }
 
@@ -33,9 +117,27 @@ async function run() {
   // Require AFTER env is populated so config reads correct values
   const usaGhinApiClient = require('../src/services/usaGhinApiClient');
 
+  let results = [];
+
   // ── Search live USGA API ─────────────────────────────────────────────────
-  console.log(`Searching USGA API for "${name}"${state ? ` in ${state}` : ''}...`);
-  const results = await usaGhinApiClient.searchCourses({ courseName: name, state, perPage: 50 });
+  if (countOnly && !name && !state) {
+    console.log('Searching USGA API for all US states...');
+    const stateResults = await mapLimit(ALL_US_STATES, 8, async (stateCode) => {
+      const stateCourses = await usaGhinApiClient.searchCourses({ state: stateCode, perPage });
+      return stateCourses;
+    });
+    const uniqueByCourseId = new Map();
+    stateResults.flat().forEach((course) => {
+      const courseId = String(course?.courseId || '').trim();
+      if (!courseId || uniqueByCourseId.has(courseId)) return;
+      uniqueByCourseId.set(courseId, course);
+    });
+    results = Array.from(uniqueByCourseId.values());
+  } else {
+    const searchLabel = [name ? `"${name}"` : null, state ? `in ${state}` : null].filter(Boolean).join(' ');
+    console.log(`Searching USGA API for ${searchLabel}...`);
+    results = await usaGhinApiClient.searchCourses({ courseName: name, state, perPage });
+  }
 
   if (!results.length) {
     console.log('No results found.');
@@ -53,20 +155,34 @@ async function run() {
     database: secrets.GHIN_CACHE_DB_NAME,
     user:     secrets.GHIN_CACHE_DB_USER,
     password: secrets.GHIN_CACHE_DB_PASSWORD,
-    options:  { encrypt: true, enableArithAbort: true }
+    options:  { encrypt: true, enableArithAbort: true },
+    requestTimeout: 60000
   });
 
   let cachedSet = new Set();
   if (safeIds.length) {
-    // Safe to interpolate — all values validated as numeric strings above
-    const inList = safeIds.map(id => `'${id}'`).join(',');
-    const cached = await pool.request().query(
-      `SELECT courseId FROM GHIN_Courses WHERE courseId IN (${inList})`
-    );
-    cachedSet = new Set(cached.recordset.map(r => r.courseId));
+    for (const idsChunk of chunk(safeIds, 500)) {
+      const inList = idsChunk.map(id => `'${id}'`).join(',');
+      const cached = await pool.request().query(
+        `SELECT courseId FROM GHIN_Courses WHERE courseId IN (${inList})`
+      );
+      cached.recordset.forEach((row) => {
+        if (row.courseId != null) {
+          cachedSet.add(String(row.courseId));
+        }
+      });
+    }
   }
 
   await pool.close();
+
+  const notCached = results.filter(r => !cachedSet.has(r.courseId));
+
+  if (countOnly) {
+    console.log(`Total Count: ${results.length}`);
+    console.log(`Not Yet In Cache: ${notCached.length}`);
+    return;
+  }
 
   // ── Print results ────────────────────────────────────────────────────────
   console.log(`\n${results.length} result(s):\n`);
@@ -78,7 +194,6 @@ async function run() {
     console.log(`  ${tag}  ${String(r.courseId).padEnd(10)}  ${label}${location ? `  —  ${location}` : ''}`);
   });
 
-  const notCached = results.filter(r => !cachedSet.has(r.courseId));
   if (notCached.length) {
     console.log(`\n  ${notCached.length} not yet in cache. To seed one:`);
     console.log('  node scripts/seed-ghin-course.js <courseId>');

@@ -1,7 +1,7 @@
 # GolfMatch GHIN Middleware — Roadmap
 
-**Last Updated:** March 25, 2026  
-**Status:** Live GHIN connectivity, cache-to-mirror sync automation, and additive course-name/schema hardening are validated; runtime read-path cutover is next
+**Last Updated:** March 26, 2026  
+**Status:** Runtime read-path cutover is validated; state-partition backfill and CacheDB -> GolfDB bulk projection are proven; stage 1 CacheDB batching is the next middleware milestone
 
 ---
 
@@ -39,14 +39,18 @@
 
 ---
 
-## Phase 2 🔄 (Next — Runtime Read-Path Cutover)
+## Phase 2 🔄 (Current — Catalog Scale Hardening)
 
-### Golf Match Consumption Cutover
-- [ ] Audit GHIN-backed gameplay/admin reads in Golf Match
-- [ ] Remove remaining middleware runtime-read dependencies for course/tee/hole serving
-- [ ] Prove mirror-first reads use `GhinRuntime*` tables end-to-end
-- [ ] Build admin GHIN search/import UX on top of the validated mirror path
-- [ ] Keep migration `025_drop_golfdb_ghin_mock_tables.sql` deferred until the validation window passes
+### Runtime Cutover and Catalog Population
+- [x] Audit GHIN-backed gameplay/admin reads in Golf Match
+- [x] Remove remaining middleware runtime-read dependencies for course/tee/hole serving
+- [x] Prove mirror-first reads use `GhinRuntime*` tables end-to-end
+- [x] Add state-partition course discovery/backfill for unknown GHIN catalog coverage
+- [x] Validate split pipeline: stage 1 GHIN -> CacheDB, stage 2 CacheDB -> GolfDB
+- [x] Implement and prove CacheDB -> GolfDB bulk projector on real state runs
+- [ ] Replace stage 1 per-course CacheDB writes with set-based bulk CacheDB writer
+- [ ] Resume broader-state and national backfill with the new stage 1 writer
+- [ ] Keep migration `025_drop_golfdb_ghin_mock_tables.sql` deferred until the validation/cleanup window passes
 
 ---
 
@@ -77,14 +81,15 @@ Golf Match should:
 2. Middleware remains the sync/normalization boundary, not the gameplay read authority.
 3. No silent repair path is allowed for invalid GHIN course payloads.
 4. Gender-based tee selection remains mandatory.
-5. Player caching/live handicap pulls are intentionally deferred until after runtime read cutover.
+5. CacheDB -> GolfDB bulk projection stays as the stage 2 model; the remaining scale fix is a bulk stage 1 CacheDB writer.
+6. Player caching/live handicap pulls are intentionally deferred until after catalog population is scale-safe.
 
 ---
 
 ## Next Steps
 
-1. [ ] Verify runtime read-path cutover in Golf Match gameplay/admin flows
-2. [ ] Build admin GHIN search/import UX
+1. [ ] Implement the stage 1 bulk CacheDB writer for `GHIN_Courses`, `GHIN_Tees`, and `GHIN_Holes`
+2. [ ] Re-run broader-state backfill proving with the new stage 1 writer
 3. [ ] Validate cleanup-window criteria before considering migration 025
 4. [ ] Implement Phase 3 live handicap pulls/player caching
 

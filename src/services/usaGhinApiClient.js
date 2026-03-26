@@ -315,7 +315,10 @@ async function getCourse(courseId) {
  * Returns normalized lightweight results.
  */
 async function searchCourses(params) {
-  const query = { page: 1, per_page: params.perPage ?? 20 };
+  const query = {
+    page: params.page ?? 1,
+    per_page: params.perPage ?? 20
+  };
 
   if (params.courseName) query.name = params.courseName;
   if (params.state) {
