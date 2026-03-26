@@ -2,6 +2,8 @@
 
 Middleware service for transforming and securing USGA GHIN/WHS API data for the Fore Play golf pairing application.
 
+Current checkpoint: live GHIN course/player connectivity, cache DB writes, golfdb runtime-mirror callback sync, webhook lifecycle validation, scheduled reconciliation, and additive `ShortCourseName` hardening are complete and validated. The next milestone is runtime read-path cutover verification in Golf Match.
+
 ## Architecture
 
 ```
@@ -135,14 +137,14 @@ Critical secrets stored in Azure Key Vault:
 
 ## Development Phases
 
-- **Phase 1-2** (Current): Mock GHIN responses
-- **Phase 3**: Fore Play integration
-- **Phase 4**: Real GHIN API connection
-- **Phase 5+**: Advanced features
+- **Phase 1 / 1.5** (Current checkpoint): Live GHIN connectivity, separate cache DB, runtime mirror sync, webhook/reconciliation automation, additive course-name hardening
+- **Phase 2**: Golf Match runtime read-path cutover and admin GHIN import UX
+- **Phase 3**: Live handicap pulls and player caching
+- **Phase 4+**: Expanded score-posting and operational hardening
 
 ## Documentation
 
-See `GHIN-MIDDLEWARE-API-DESIGN.md` in the main project for full API specification.
+See `MIDDLEWARE-ARCHITECTURE.md` in this repo for the current middleware architecture and implementation status.
 
 ## License
 

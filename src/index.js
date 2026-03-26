@@ -15,6 +15,7 @@ const { rateLimiter } = require('./middleware/rate-limit');
 const database = require('./services/database');
 const redis = require('./services/redis');
 const { loadSecrets } = require('./config/secrets');
+const { startReconciliationScheduler } = require('./services/reconciliationScheduler');
 
 async function initializeSecrets() {
   if (process.env.NODE_ENV === 'test') {
@@ -59,7 +60,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization', 'X-GHIN-Webhook-Token'],
   maxAge: 86400
 };
 
@@ -79,10 +80,12 @@ app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
 const healthRouter = require('./routes/health');
 const playersRouter = require('./routes/players');
 const coursesRouter = require('./routes/courses');
+const webhooksRouter = require('./routes/webhooks');
 
 app.use('/api/v1/health', healthRouter);
 app.use('/api/v1/players', playersRouter);
 app.use('/api/v1/courses', coursesRouter);
+app.use('/api/v1/webhooks', webhooksRouter);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -155,6 +158,7 @@ async function bootstrap() {
   app.listen(PORT, () => {
     const ghinMode = config.ghin.useMock ? 'MOCK' : 'LIVE';
     const dbConfigured = Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME);
+    const reconciliationScheduler = startReconciliationScheduler();
 
     logger.info('Startup summary', {
       port: PORT,
@@ -163,7 +167,8 @@ async function bootstrap() {
       dbConfigured,
       redisConfigured: Boolean(config.redis.host),
       secretsLoaded: secretStatus.loaded,
-      secretsSource: secretStatus.source
+      secretsSource: secretStatus.source,
+      reconciliationScheduler
     });
     logger.info(`GHIN Middleware API listening on port ${PORT}`);
     logger.info('✅ Startup complete - middleware is ready to accept requests');

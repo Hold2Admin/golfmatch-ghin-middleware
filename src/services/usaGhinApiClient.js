@@ -11,6 +11,46 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('usaGhinApiClient');
 
+function getRequestTimeoutMs() {
+  const timeout = Number(process.env.GHIN_API_TIMEOUT_MS || config.ghin.timeout || 10000);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : 10000;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = getRequestTimeoutMs()) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      throw new Error(`USGA API timeout after ${timeoutMs}ms for ${options.method || 'GET'} ${url}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function getApiBaseUrl() {
+  return process.env.GHIN_API_BASE_URL || config.ghin.baseUrl;
+}
+
+function getSandboxEmail() {
+  return process.env.GHIN_SANDBOX_EMAIL || config.ghin.sandboxEmail;
+}
+
+function getSandboxPassword() {
+  return process.env.GHIN_SANDBOX_PASSWORD || config.ghin.sandboxPassword;
+}
+
+function getWebhookBaseUrl() {
+  return process.env.GHIN_WEBHOOK_BASE_URL || null;
+}
+
 // ============================================================
 // Outbound allowlist — only these METHOD + path patterns may
 // be called against the USGA API. Blocks any accidental or
@@ -25,6 +65,11 @@ const ALLOWLIST = [
   { method: 'POST', pattern: /^\/scores\.json$/ },
   { method: 'GET',  pattern: /^\/scores\/search\.json$/ },
   { method: 'POST', pattern: /^\/golfers\/\d+\/request_golfer_product_access\.json$/ },
+  { method: 'GET',  pattern: /^\/user\/webhook_settings\.json$/ },
+  { method: 'PATCH',pattern: /^\/user\/webhook_settings\.json$/ },
+  { method: 'DELETE',pattern: /^\/user\/webhook_settings\.json$/ },
+  { method: 'GET',  pattern: /^\/user\/webhook_settings\/test\.json$/ },
+  { method: 'GET',  pattern: /^\/user\/webhooks\.json$/ },
 ];
 
 /**
@@ -42,23 +87,42 @@ function isAllowlisted(method, path) {
 // Token cache
 // ============================================================
 let _tokenCache = null; // { token: string, expiresAt: number }
+let _tokenRefreshPromise = null;
 
 async function getToken() {
   if (_tokenCache && _tokenCache.expiresAt > Date.now() + 60_000) {
     return _tokenCache.token;
   }
+
+  if (_tokenRefreshPromise) {
+    return _tokenRefreshPromise;
+  }
+
   return _refreshToken();
 }
 
 async function _refreshToken() {
-  const url = `${config.ghin.baseUrl}/users/login.json`;
-  const response = await fetch(url, {
+  if (_tokenRefreshPromise) {
+    return _tokenRefreshPromise;
+  }
+
+  _tokenRefreshPromise = (async () => {
+  const sandboxEmail = getSandboxEmail();
+  const sandboxPassword = getSandboxPassword();
+  const baseUrl = getApiBaseUrl();
+
+  if (!sandboxEmail || !sandboxPassword) {
+    throw new Error('GHIN sandbox credentials are missing (GHIN_SANDBOX_EMAIL / GHIN_SANDBOX_PASSWORD).');
+  }
+
+  const url = `${baseUrl}/users/login.json`;
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       user: {
-        email: config.ghin.sandboxEmail,
-        password: config.ghin.sandboxPassword,
+        email: sandboxEmail,
+        password: sandboxPassword,
         remember_me: true
       }
     })
@@ -78,6 +142,13 @@ async function _refreshToken() {
   _tokenCache = { token, expiresAt: Date.now() + 11.5 * 60 * 60 * 1000 };
   logger.info('USGA bearer token refreshed');
   return token;
+  })();
+
+  try {
+    return await _tokenRefreshPromise;
+  } finally {
+    _tokenRefreshPromise = null;
+  }
 }
 
 // ============================================================
@@ -98,7 +169,7 @@ async function request(method, path, params = {}) {
 
   const token = await getToken();
 
-  const url = new URL(`${config.ghin.baseUrl}${path}`);
+  const url = new URL(`${getApiBaseUrl()}${path}`);
   if (method === 'GET') {
     Object.entries(params).forEach(([k, v]) => {
       if (v !== undefined && v !== null) url.searchParams.set(k, v);
@@ -116,14 +187,72 @@ async function request(method, path, params = {}) {
     fetchOptions.body = JSON.stringify(params);
   }
 
-  let response = await fetch(url.toString(), fetchOptions);
+  let response = await fetchWithTimeout(url.toString(), fetchOptions);
 
   // Retry once on 401 — token may have expired mid-session
   if (response.status === 401) {
     _tokenCache = null;
     const freshToken = await _refreshToken();
     fetchOptions.headers.Authorization = `Bearer ${freshToken}`;
-    response = await fetch(url.toString(), fetchOptions);
+    response = await fetchWithTimeout(url.toString(), fetchOptions);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`USGA API ${response.status} on ${method} ${path}: ${text}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Same as request(), but allows overriding base URL for endpoints hosted
+ * on GHIN app API host (webhook settings/list/test).
+ */
+async function requestWithBase(method, path, params = {}, baseUrlOverride = null) {
+  if (!baseUrlOverride) {
+    return request(method, path, params);
+  }
+
+  if (!isAllowlisted(method, path)) {
+    logger.warn('Blocked outbound USGA request — not allowlisted', {
+      method,
+      path,
+      env: config.env
+    });
+    throw Object.assign(
+      new Error(`USGA API call not allowlisted: ${method} ${path}`),
+      { code: 'not_allowlisted' }
+    );
+  }
+
+  const token = await getToken();
+
+  const url = new URL(`${baseUrlOverride}${path}`);
+  if (method === 'GET') {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) url.searchParams.set(k, v);
+    });
+  }
+
+  const fetchOptions = {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  };
+  if (method !== 'GET' && Object.keys(params).length) {
+    fetchOptions.body = JSON.stringify(params);
+  }
+
+  let response = await fetchWithTimeout(url.toString(), fetchOptions);
+
+  if (response.status === 401) {
+    _tokenCache = null;
+    const freshToken = await _refreshToken();
+    fetchOptions.headers.Authorization = `Bearer ${freshToken}`;
+    response = await fetchWithTimeout(url.toString(), fetchOptions);
   }
 
   if (!response.ok) {
@@ -191,7 +320,9 @@ async function searchCourses(params) {
   if (params.courseName) query.name = params.courseName;
   if (params.state) {
     query.country = params.country ?? 'USA';
-    query.state = params.state;
+    // Default to US- prefix if no country prefix present (GHIN supports CA-, MX-, etc.)
+    const state = String(params.state).trim();
+    query.state = state.includes('-') ? state : `US-${state}`;
     if (!query.name) query.name = '';
   }
   if (params.facilityId) query.facility_id = params.facilityId;
@@ -199,6 +330,32 @@ async function searchCourses(params) {
   const data = await request('GET', '/courses/search.json', query);
   const courses = data.courses ?? [];
   return courses.map(_normalizeCourseSearchResult);
+}
+
+// ============================================================
+// Webhook endpoints
+// ============================================================
+
+async function getWebhookSettings() {
+  return requestWithBase('GET', '/user/webhook_settings.json', {}, getWebhookBaseUrl());
+}
+
+async function updateWebhookSettings(payload) {
+  return requestWithBase('PATCH', '/user/webhook_settings.json', payload, getWebhookBaseUrl());
+}
+
+async function deleteWebhookSettings() {
+  return requestWithBase('DELETE', '/user/webhook_settings.json', {}, getWebhookBaseUrl());
+}
+
+async function testWebhook(type) {
+  return requestWithBase('GET', '/user/webhook_settings/test.json', { type }, getWebhookBaseUrl());
+}
+
+async function listWebhooks(params = {}) {
+  const page = params.page || 1;
+  const perPage = params.perPage || 25;
+  return requestWithBase('GET', '/user/webhooks.json', { page, per_page: perPage }, getWebhookBaseUrl());
 }
 
 // ============================================================
@@ -265,18 +422,68 @@ function _normalizeState(raw) {
   return state;
 }
 
+function _normalizeIso(raw) {
+  if (raw === null || raw === undefined) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function _composeCourseDisplayName(facilityName, courseName, fullName = null) {
+  const facility = facilityName ? String(facilityName).trim() : '';
+  const course = courseName ? String(courseName).trim() : '';
+  const full = fullName ? String(fullName).trim() : '';
+
+  if (full) {
+    return full;
+  }
+
+  if (!facility) {
+    return course || null;
+  }
+
+  if (!course) {
+    return facility;
+  }
+
+  if (facility.localeCompare(course, undefined, { sensitivity: 'accent' }) === 0) {
+    return facility;
+  }
+
+  if (course.toLowerCase().includes(facility.toLowerCase())) {
+    return course;
+  }
+
+  return `${facility} - ${course}`;
+}
+
 function _normalizeCourse(data, courseId) {
   const facility = data.Facility ?? {};
   const teeSets = data.TeeSets ?? [];
+  const rawCourseName = data.CourseName ?? data.Name ?? facility.CourseName ?? facility.Name ?? null;
+  const facilityName = facility.FacilityName ?? facility.Name ?? data.FacilityName ?? null;
+  const displayName = _composeCourseDisplayName(facilityName, rawCourseName);
 
   return {
     courseId,
-    courseName: facility.FacilityName ?? null,
+    courseName: displayName,
+    facilityName,
+    displayName,
+    shortCourseName: rawCourseName ?? null,
     city: data.CourseCity ?? data.City ?? facility.City ?? null,
     state: _normalizeState(data.CourseState ?? data.State ?? facility.State),
     country: data.Country ?? null,
     facilityId: facility.FacilityId != null ? String(facility.FacilityId) : null,
-    lastUpdatedUtc: null,
+    lastUpdatedUtc: _normalizeIso(
+      data.UpdatedOn
+      ?? data.LastUpdatedUtc
+      ?? data.LastUpdatedAt
+      ?? data.LastModifiedUtc
+      ?? data.LastModifiedAt
+      ?? facility.UpdatedOn
+      ?? facility.LastUpdatedUtc
+      ?? facility.LastUpdatedAt
+    ),
     tees: teeSets.map((tee, idx) => {
       const ratings = tee.Ratings ?? [];
       const totalRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'total') || {};
@@ -318,9 +525,15 @@ function _normalizeCourse(data, courseId) {
 }
 
 function _normalizeCourseSearchResult(c) {
+  const facilityName = c.FacilityName ?? null;
+  const rawCourseName = c.CourseName ?? null;
+  const displayName = _composeCourseDisplayName(facilityName, rawCourseName, c.FullName ?? null);
   return {
     courseId: c.CourseID != null ? String(c.CourseID) : null,
-    courseName: c.CourseName ?? c.FacilityName ?? null,
+    courseName: displayName,
+    facilityName,
+    displayName,
+    shortCourseName: rawCourseName ?? null,
     city: c.City ?? null,
     state: c.State ?? null,
     country: c.Country ?? null,
@@ -329,4 +542,15 @@ function _normalizeCourseSearchResult(c) {
   };
 }
 
-module.exports = { getGolfer, searchGolfers, getCourse, searchCourses, isAllowlisted };
+module.exports = {
+  getGolfer,
+  searchGolfers,
+  getCourse,
+  searchCourses,
+  getWebhookSettings,
+  updateWebhookSettings,
+  deleteWebhookSettings,
+  testWebhook,
+  listWebhooks,
+  isAllowlisted
+};

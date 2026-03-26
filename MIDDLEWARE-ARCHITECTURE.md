@@ -2,7 +2,7 @@
 
 **Last Updated:** March 25, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — mirror-first runtime direction locked, sync automation still in progress
+**Status:** Active development — mirror-first runtime direction, cache-to-mirror sync automation, and additive course-name/schema hardening are validated; runtime read-path cutover verification is next
 
 ---
 
@@ -29,8 +29,14 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - Cache DB seed and smoke flow validated with real GHIN course `1385` (search -> tees -> holes).
 - Course location normalization was corrected: read `CourseCity` / `CourseState` from GHIN payload and normalize state `US-XX` -> `XX`.
 - Cache refresh now preserves city/state correctly for the validated seed course.
-- One-time manual proof synced course `1385` from cache into `golfdb.dbo.GhinRuntimeCourses`.
-- Remaining major gap: automated cache -> mirror callback/webhook sync path is not yet implemented in `golf-match-local-cache` API.
+- Internal callback sync is implemented and validated: middleware sends normalized payloads to `POST /api/internal/ghin-import-callback`, and golfdb mirror writes are atomic/idempotent.
+- Webhook lifecycle is validated in sandbox (`ensure`, `test`, `status`, `list`) and scheduled reconciliation is implemented as the safety-net path.
+- Reconciliation now repairs manual CacheDB drift correctly and backfills deterministic managed hash fields on no-op matches.
+- Seed path now initializes the same deterministic hash fields as reconciliation, so fresh seeds and later syncs are parity-safe.
+- Additive schema hardening is complete: `ShortCourseName` is now persisted in both cache and golfdb runtime mirror, while `CourseName` is the composed runtime/app label `<FacilityName> - <ShortCourseName>`.
+- Representative multi-course verification completed in both DBs for `14914`, `14917`, and `10820`.
+- Known explicit source-data blocker remains `14916`: GHIN omits hole `Allocation`, and middleware intentionally fails fast rather than synthesizing invalid data.
+- Remaining major gap is runtime read-path cutover verification inside Golf Match gameplay/admin reads.
 
 ---
 
@@ -240,7 +246,7 @@ See [src/mocks/ghinData.js](src/mocks/ghinData.js) for full mock data.
   - Returns: matching courses (course/city/state)
 3. **User selects course** → gameplay path reads from golfdb mirror (`GhinRuntime*` tables)
   - Middleware remains sync/normalization boundary, not the gameplay runtime read source
-4. **If course is stale/missing in mirror**, sync path is triggered (callback/webhook/reconciliation work in progress)
+4. **If course is stale/missing in mirror**, sync path is triggered (callback/webhook/reconciliation implemented)
   - Middleware fetches from GHIN and normalizes deterministic payload
   - Golf Match API upserts mirror rows atomically
 5. **User selects tee** → golfmatch-api returns mirror tee options
@@ -251,7 +257,7 @@ See [src/mocks/ghinData.js](src/mocks/ghinData.js) for full mock data.
   - Tee: mirrored GHIN tee row (`GhinTeeId`)
    - Hole baselines: 18 holes with par/handicap
 
-**Current implementation note:** one-time manual proof updated `GhinRuntimeCourses` for course `1385`. Automated callback/webhook sync into mirror tables remains pending in golfmatch-api.
+**Current implementation note:** automated callback/webhook/reconciliation sync into golfdb mirror tables is implemented and validated. The next verification step is proving all GHIN-backed gameplay/admin reads now resolve from `GhinRuntime*` rather than middleware runtime reads or legacy default/override tables.
 
 ---
 
@@ -407,7 +413,8 @@ CREATE TABLE GHIN_Courses (
   CourseId              VARCHAR(50) PRIMARY KEY,
   FacilityId            VARCHAR(50) NULL,       -- NEW: Facility identifier from USGA
   FacilityName          NVARCHAR(200) NULL,     -- NEW: Facility name (e.g., "Cedar Ridge Golf Club")
-  CourseName            NVARCHAR(100) NOT NULL,
+  CourseName            NVARCHAR(200) NOT NULL, -- App-facing composed label (e.g., "Bethpage State Park - Green")
+  ShortCourseName       NVARCHAR(200) NULL,     -- Raw GHIN sub-course name (e.g., "Green")
   City                  NVARCHAR(100) NULL,
   State                 NVARCHAR(50) NULL,
   Country               NVARCHAR(50) NULL,
@@ -559,8 +566,10 @@ CREATE TABLE GhinCourseMapping (
 |-----------|--------|--------|---------|
 | **023_phase15_ghin_schema_extensions.sql** | golfdb | Executed + verified (Mar 24, 2026) | Add metadata + consent/verification + tournament flag |
 | **024_golfdb_ghin_course_mapping.sql** | golfdb | Executed + verified (Mar 24, 2026; FK syntax patched to `ON DELETE NO ACTION`) | Create GhinCourseMapping bridge table |
-| **026_create_golfdb_ghin_runtime_mirror_tables.sql** | golfdb | Authored (Mar 25, 2026), pending controlled execution | Create GhinRuntimeCourses/Tees/Holes runtime mirror tables + indexes |
+| **026_create_golfdb_ghin_runtime_mirror_tables.sql** | golfdb | Executed + verified (Mar 25, 2026) | Create GhinRuntimeCourses/Tees/Holes runtime mirror tables + indexes |
+| **027_add_shortcoursename_to_ghin_runtime_courses.sql** | golfdb | Executed + verified (Mar 25, 2026) | Add `ShortCourseName` to runtime mirror courses and backfill existing rows |
 | **001_create_ghin_cache_tables.sql** | golfdb-ghin-cache | Executed + verified (Mar 24, 2026) | Create production GHIN cache schema |
+| **002_add_shortcoursename_to_ghin_cache_courses.sql** | golfdb-ghin-cache | Executed + verified (Mar 25, 2026) | Add `ShortCourseName` to cache courses and backfill existing rows |
 | **025_drop_golfdb_ghin_mock_tables.sql** (deferred) | golfdb | Blocked | Drop mock tables after cache DB goes live |
 
 **Execution Sequence (Mandatory Order):**
@@ -571,11 +580,13 @@ CREATE TABLE GhinCourseMapping (
 5. ✅ **Cache DB seeded** — Real GHIN course (`courseId=1385`) inserted and queryable
 6. ✅ **Local integration smoke** — search/course/tees/holes flow validated on localhost
 7. ✅ **Location normalization validated** — cache now stores normalized city/state from GHIN `CourseCity`/`CourseState`
-8. ✅ **One-time mirror proof** — `GhinRuntimeCourses` for course `1385` manually updated from cache data
-9. ⏳ **Automated mirror sync pending** — callback/webhook/reconciliation implementation still required in golfmatch-api
-10. Run migration 025 (golfdb, after cutover verification) — drop mock tables
+8. ✅ **Runtime mirror migration executed** — `GhinRuntimeCourses` / `GhinRuntimeTees` / `GhinRuntimeHoles` are live in golfdb
+9. ✅ **Automated mirror sync validated** — callback/webhook/reconciliation path now upserts mirror rows atomically
+10. ✅ **Course-name hardening executed** — `ShortCourseName` added and backfilled in cache + runtime mirror
+11. ⏳ **Runtime read-path cutover verification next** — prove GHIN-backed gameplay/admin reads use `GhinRuntime*`
+12. Run migration 025 (golfdb, after cutover verification) — drop mock tables
 
-**See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache for detailed execution runbook with cutover checkpoints and verification queries.**
+**See the Golf Match implementation record in `c:\dev\golf-match-local-cache\docs\GHIN-INTEGRATION-PLAN.md` for detailed execution runbook with cutover checkpoints and verification queries.**
 
 ---
 
@@ -804,21 +815,21 @@ GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M
 - ✅ **Extended cache schema authored** — GHIN_Courses/Tees/Holes with TeeSetSide awareness, F9/B9/18H ratings, 24h TTL
 - ✅ **GhinCourseMapping bridge table designed** — maps GHIN IDs ↔ Golf Match IDs (no cross-DB FK)
 - ✅ **Metadata + consent/verification columns designed** — UserProfiles (GPA consent), GlobalRoster (identity verification only)
-- ✅ **Migration suite executed** — 023 + 024 on golfdb and cache migration 001 on golfdb-ghin-cache
+- ✅ **Migration suite executed** — 023 + 024 + 026 + 027 on golfdb and 001 + 002 on golfdb-ghin-cache
 - ✅ **Middleware integration complete** — cache DB routing and secret-name compatibility fixes are in place
-- ✅ **Cache DB population validated** — real seeded course path works end-to-end
-- ⏳ **Final cutover step pending** — migration 025 remains deferred until explicit go/no-go
+- ✅ **Cache DB population validated** — real seeded/reconciled course paths work end-to-end
+- ✅ **Mirror sync automation validated** — callback, webhook lifecycle, and reconciliation safety net are live
+- ✅ **Course naming model hardened** — `FacilityName` + raw `ShortCourseName` + composed runtime `CourseName`
+- ⏳ **Final cutover step pending** — runtime read-path verification first; migration 025 remains deferred until explicit go/no-go
 
-**See [GHIN-INTEGRATION-PLAN.md](../docs/GHIN-INTEGRATION-PLAN.md) in golf-match-local-cache workspace for complete migration suite details, execution sequence, and cutover checkpoints.**
+**See the Golf Match implementation record in `c:\dev\golf-match-local-cache\docs\GHIN-INTEGRATION-PLAN.md` for complete migration suite details, execution sequence, and cutover checkpoints.**
 
-### Phase 2 (Planned — Course Nightly Sync)
-- 🔄 Implement nightly background job to:
-  1. Call live GHIN API for course listing (filtered by state/region)
-  2. Fetch each course's tees and hole baselines with TeeSetSide & F9/B9/18H ratings
-  3. Compute SHA256 hash of fetched data to detect changes
-  4. Upsert into `golfdb-ghin-cache` tables (GHIN_Courses, GHIN_Tees, GHIN_Holes)
-  5. Update GhinCourseMapping as new courses onboard
-  6. Log changes to Application Insights for monitoring
+### Phase 2 (Next — Runtime Read-Path Cutover + Admin Import UX)
+- 🔄 Verify and complete mirror-first consumption in Golf Match:
+  1. Audit GHIN-backed gameplay/admin reads and remove remaining middleware runtime-read dependencies
+  2. Prove course/tee/hole reads come from `GhinRuntimeCourses` / `GhinRuntimeTees` / `GhinRuntimeHoles`
+  3. Build admin GHIN search/import UX on top of the validated mirror model
+  4. Keep migration 025 deferred until mirror-first reads are stable through the validation window
 
 ### Phase 3 (Planned — Player Handicap Sync)
 - 🔄 Implement player handicap caching and refresh:

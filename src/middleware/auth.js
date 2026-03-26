@@ -92,7 +92,7 @@ function constantTimeCompare(a, b) {
  * Endpoint exclusions - routes that don't require API key
  * Health check is public for load balancers
  */
-const excludedPaths = ['/api/v1/health', '/'];
+const excludedPaths = ['/api/v1/health', '/', '/api/v1/webhooks/ghin/course'];
 
 /**
  * Conditional auth middleware

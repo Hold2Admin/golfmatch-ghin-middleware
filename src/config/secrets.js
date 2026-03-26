@@ -59,11 +59,19 @@ async function loadSecrets() {
     const [appInsights, ghinEmail, ghinPassword, ghinBaseUrl, middlewareApiKey, apiKeySecret, sqlUser, sqlPassword, sqlServer, sqlDatabase, redisPassword] = 
       await Promise.race([secretsPromise, timeoutPromise]);
 
-    const [cacheDbServer, cacheDbName, cacheDbUser, cacheDbPassword] = await Promise.all([
+    const [cacheDbServer, cacheDbName, cacheDbUser, cacheDbPassword, ghinMiddlewareSecret] = await Promise.all([
       getFirstSecret(client, ['GHIN-CACHE-DB-SERVER', 'GHIN_CACHE_DB_SERVER']),
       getFirstSecret(client, ['GHIN-CACHE-DB-NAME', 'GHIN_CACHE_DB_NAME']),
       getFirstSecret(client, ['GHIN-CACHE-DB-USER', 'GHIN_CACHE_DB_USER']),
-      getFirstSecret(client, ['GHIN-CACHE-DB-PASSWORD', 'GHIN_CACHE_DB_PASSWORD'])
+      getFirstSecret(client, ['GHIN-CACHE-DB-PASSWORD', 'GHIN_CACHE_DB_PASSWORD']),
+      client.getSecret('GHIN-MIDDLEWARE-SECRET').then((s) => s?.value?.trim() || null).catch(() => null)
+    ]);
+
+    const [courseWebhookUrl, courseWebhookToken, webhookBaseUrl, importCallbackUrl] = await Promise.all([
+      getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-URL', 'GHIN_COURSE_WEBHOOK_URL']),
+      getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-TOKEN', 'GHIN_COURSE_WEBHOOK_TOKEN']),
+      getFirstSecret(client, ['GHIN-WEBHOOK-BASE-URL', 'GHIN_WEBHOOK_BASE_URL']),
+      getFirstSecret(client, ['GHIN-IMPORT-CALLBACK-URL', 'GHIN_IMPORT_CALLBACK_URL'])
     ]);
 
     secretsCache = {
@@ -72,11 +80,16 @@ async function loadSecrets() {
       GHIN_SANDBOX_PASSWORD: ghinPassword?.value,
       GHIN_API_BASE_URL: ghinBaseUrl?.value,
       GHIN_MIDDLEWARE_API_KEY: middlewareApiKey?.value,
+      GHIN_COURSE_WEBHOOK_URL: courseWebhookUrl,
+      GHIN_COURSE_WEBHOOK_TOKEN: courseWebhookToken,
+      GHIN_WEBHOOK_BASE_URL: webhookBaseUrl,
+      GHIN_IMPORT_CALLBACK_URL: importCallbackUrl,
       API_KEY_HASH_SECRET: apiKeySecret?.value,
       GHIN_CACHE_DB_SERVER: cacheDbServer,
       GHIN_CACHE_DB_NAME: cacheDbName,
       GHIN_CACHE_DB_USER: cacheDbUser,
       GHIN_CACHE_DB_PASSWORD: cacheDbPassword,
+      GHIN_MIDDLEWARE_SECRET: ghinMiddlewareSecret,
       AZURE_SQL_USER: sqlUser?.value,
       AZURE_SQL_PASSWORD: sqlPassword?.value,
       AZURE_SQL_SERVER: sqlServer?.value,

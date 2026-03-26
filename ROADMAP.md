@@ -1,136 +1,90 @@
 # GolfMatch GHIN Middleware — Roadmap
 
-**Last Updated:** December 25, 2025  
-**Status:** Phase 1 Complete; Phase 2 Planned (Nightly GHIN Sync)
+**Last Updated:** March 25, 2026  
+**Status:** Live GHIN connectivity, cache-to-mirror sync automation, and additive course-name/schema hardening are validated; runtime read-path cutover is next
 
 ---
 
 ## Phase 1 ✅ (Completed)
 
-### Courses Feature
-- ✅ Mock data: Cedar Ridge GC (GHIN-54321, Boulder CO) with 4 tees (Blue M/W defaults, White M/W), all with complete 18-hole baselines
-- ✅ Endpoint: `GET /api/v1/courses/state/:state` — List courses by state
-- ✅ Endpoint: `GET /api/v1/courses/:ghinCourseId/tees` — Fetch tees with isDefault flag, ratings, slope, par, yardage
-- ✅ Endpoint: `GET /api/v1/courses/:ghinCourseId/holes?teeId=:teeId&gender=:gender` — Fetch 18-hole baseline for tee+gender
-- ✅ Database schema: Courses, Tees, CourseDefaults, HoleDefaults, HoleOverrides, TeeRatings (all defined, exported)
-- ✅ Documentation: MIDDLEWARE-ARCHITECTURE.md with full integration guide
+### Core Connectivity
+- ✅ Live GHIN player lookup wired and validated
+- ✅ Live GHIN course search/fetch/tees/holes paths wired and validated
+- ✅ Middleware auth, endpoint allowlist, and normalized response shaping are in place
 
-### Players Feature (Mock)
-- ✅ Mock data: Clayton Cobb (GHIN 1234567, M, HI 9.4), Michael Draskin (2345678, M, +1.0), Ryan Kayton (3456789, M, 2.3)
-- ✅ Endpoint: `POST /api/v1/players/search` — GHIN member lookup (returns gender, handicap index, club, status, etc.)
-- ✅ Documentation: Full player integration flow, gender-based tee selection
+### Cache Foundation
+- ✅ Separate cache DB (`golfdb-ghin-cache`) is live
+- ✅ Real seeded course flows validated against cache (`1385` and expanded follow-up set)
+- ✅ Course location normalization fixed (`CourseCity` / `CourseState`, `US-XX` -> `XX`)
 
 ---
 
-## Phase 2 🔄 (Planned — Nightly GHIN Sync)
+## Phase 1.5 ✅ (Validated Checkpoint)
 
-### Course Data Synchronization
-- [ ] Background job scheduler (nightly, e.g., 2 AM UTC)
-- [ ] Live GHIN API client integration (replace mock ghinClient)
-- [ ] SHA256 change detection for course/tee/hole data
-- [ ] Upsert procedures:
-  - `usp_CreateCourseWithDefaults` — Insert new course + auto-populate defaults
-  - `usp_AddTeeForCourseWithRatings` — Add tee variant with ratings
-  - `usp_ReplaceHoleDefaultsByGender` — Atomically replace hole defaults
-  - `usp_ApplyHoleDefaultsToAllTeesByGender` — Auto-populate non-default tees
-- [ ] Logging & alerting (Application Insights) for sync success/failure
-- [ ] Rollback strategy if GHIN API data is invalid
-- [ ] Rate limiting to respect GHIN API quotas
+### Mirror Sync and Reconciliation
+- ✅ Runtime mirror tables (`GhinRuntimeCourses`, `GhinRuntimeTees`, `GhinRuntimeHoles`) executed and verified
+- ✅ Internal callback sync path validated into golfdb mirror
+- ✅ Webhook lifecycle validated in sandbox
+- ✅ Scheduled reconciliation safety net implemented
+- ✅ Deterministic hashing/no-op detection implemented
+- ✅ Reconciliation now repairs manual CacheDB drift and backfills missing managed hash fields
+- ✅ Seed path now initializes the same managed hash fields as reconciliation
 
-### Deliverables
-- Nightly job runs autonomously; middleware always serves fresh course data
-- No manual intervention needed for course updates
-- Change detection prevents unnecessary DB writes
+### Naming and Data Integrity
+- ✅ `FacilityName` retained as raw GHIN facility name
+- ✅ `ShortCourseName` added to cache and runtime mirror and backfilled
+- ✅ `CourseName` standardized as composed runtime/app label `<FacilityName> - <ShortCourseName>`
+- ✅ Representative verification completed for `14914`, `14917`, and `10820` in both DBs
+- ✅ `14916` classified as upstream GHIN data-integrity defect; middleware intentionally fails fast instead of synthesizing missing hole allocation
 
 ---
 
-## Phase 3 📋 (Future — Player Index Caching)
+## Phase 2 🔄 (Next — Runtime Read-Path Cutover)
 
-### Player Handicap Index Synchronization
-- [ ] Background job to sync active players' index from GHIN API
-- [ ] Redis cache with IsUpdated flag (not fixed TTL)
-  - Check flag daily; if not updated, reuse cached index
-  - If updated, pull fresh from GHIN API
-- [ ] Endpoint: `POST /api/v1/players/refresh` — On-demand player index update
-- [ ] Rate limiting & quota management for GHIN player API calls
-- [ ] Fallback to live GHIN API on cache miss
-- [ ] Logging for cache hits/misses
-
-### Deliverables
-- Player index cached efficiently without blind expiration
-- Fore Play can refresh player data on-demand or rely on daily cache sync
-- Minimizes live GHIN API calls for frequently-used players
+### Golf Match Consumption Cutover
+- [ ] Audit GHIN-backed gameplay/admin reads in Golf Match
+- [ ] Remove remaining middleware runtime-read dependencies for course/tee/hole serving
+- [ ] Prove mirror-first reads use `GhinRuntime*` tables end-to-end
+- [ ] Build admin GHIN search/import UX on top of the validated mirror path
+- [ ] Keep migration `025_drop_golfdb_ghin_mock_tables.sql` deferred until the validation window passes
 
 ---
 
-## Testing & Integration
+## Phase 3 📋 (Future — Live Handicap Pulls and Player Caching)
 
-### Phase 1 Testing (Current — Courses Standalone)
-**No golfmatch-api integration needed.** Test endpoints directly via REST client.
+### Player Runtime Data
+- [ ] Implement live handicap pull flow for Golf Match games/trips
+- [ ] Add player caching strategy for repeated GHIN lookups
+- [ ] Add on-demand refresh path and error/status surfacing
+- [ ] Monitor quota/rate-limit behavior under real usage
 
-**Setup:**
-```bash
-npm run dev
-./scripts/gm.ps1
-Set-GmKey
-```
+---
 
-**Test Courses Feature:**
-```bash
-# List Colorado courses
-gmx-local /api/v1/courses/state/CO
-# Expected: Cedar Ridge (GHIN-54321) + others
+## Integration Direction
 
-# Fetch tees for Cedar Ridge
-gmx-local /api/v1/courses/GHIN-54321/tees
-# Expected: Blue M (default), Blue W (default), White M, White W
-# with isDefault: true/false flags, ratings, slope, yardage
+Golf Match should:
 
-# Fetch hole baseline (Blue tee, Male)
-gmx-local "/api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M"
-# Expected: 18 holes with par, handicap, yardage
-```
-
-**Test Players Feature:**
-```bash
-# Search player by GHIN number
-gmx-local /api/v1/players/search -Method POST -Body '{"ghinNumber":"1234567"}'
-# Expected: Clayton Cobb (M, HI 9.4)
-
-gmx-local /api/v1/players/search -Method POST -Body '{"ghinNumber":"2345678"}'
-# Expected: Michael Draskin (M, HI +1.0)
-```
-
-### Phase 2+ Integration (golfmatch-api)
-**When Phase 2 is complete,** golfmatch-api will:
-
-1. Call `GET /api/v1/players/search` → get player gender
-2. Call `GET /api/v1/courses/state/:state` → list available courses
-3. Call `GET /api/v1/courses/:courseId/tees` → fetch tees for player's gender
-4. Call `GET /api/v1/courses/:courseId/holes?teeId=:teeId&gender=:gender` → fetch hole baselines
-5. Upsert course/tees/defaults/holes into golfmatch-api's own `golfdb` tables
-6. Use cached data for all future rounds
-
-**No live GHIN API calls per-user—all data cached locally.**
-
-**Integration Design Document:** To be created in Phase 2 (TBD).
+1. Use middleware as the only GHIN/USGA boundary.
+2. Use middleware for sync, normalization, validation, and webhook/reconciliation handling.
+3. Read GHIN-backed course/tee/hole runtime data from golfdb mirror tables.
+4. Avoid direct middleware runtime reads for gameplay once cutover is complete.
 
 ---
 
 ## Known Decisions
 
-1. **Courses feature is complete** — no additional work needed for Phase 1
-2. **Players search is mock-only** — real GHIN API integration in Phase 3
-3. **Player handicap INDEX cached** (Phase 3, uses IsUpdated flag)
-4. **Gender-based tee selection critical** — always filter by player gender
-5. **No live GHIN calls per-user** — all data cached locally; nightly sync keeps it fresh
+1. Mirror-first runtime serving is locked.
+2. Middleware remains the sync/normalization boundary, not the gameplay read authority.
+3. No silent repair path is allowed for invalid GHIN course payloads.
+4. Gender-based tee selection remains mandatory.
+5. Player caching/live handicap pulls are intentionally deferred until after runtime read cutover.
 
 ---
 
 ## Next Steps
 
-1. ✅ **Test Phase 1 endpoints** (standalone, no integration) ← You are here
-2. [ ] **Design Phase 2 nightly sync** (GHIN API integration, upsert procedures)
-3. [ ] **Create Phase 2 integration guide** (how golfmatch-api calls and caches)
-4. [ ] **Plan Phase 3** (player index caching with IsUpdated flag)
+1. [ ] Verify runtime read-path cutover in Golf Match gameplay/admin flows
+2. [ ] Build admin GHIN search/import UX
+3. [ ] Validate cleanup-window criteria before considering migration 025
+4. [ ] Implement Phase 3 live handicap pulls/player caching
 

@@ -29,6 +29,7 @@
     "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",
     "helmet": "^7.1.0",
+    "luxon": "^3.7.2",
     "mssql": "^12.2.0",
     "redis": "^4.6.11",
     "uuid": "^9.0.1",
