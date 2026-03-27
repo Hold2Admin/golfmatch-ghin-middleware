@@ -11,6 +11,8 @@
  *   node scripts/backfill-ghin-courses.js
  *   node scripts/backfill-ghin-courses.js --states=US-WA,US-OR --sync-concurrency=12
  *   node scripts/backfill-ghin-courses.js --states=US-CT --sync-concurrency=8 --mirror-concurrency=2
+ *   node scripts/backfill-ghin-courses.js --states=US-NY --projection-mode=none --cache-batch-size=100
+ *   node scripts/backfill-ghin-courses.js --states=US-GA --projection-mode=none --validation-chunk-size=25 --cache-batch-size=100
  *   node scripts/backfill-ghin-courses.js --states=US-VT --sync-concurrency=16 --cache-write-concurrency=4 --projection-mode=none
  *   node scripts/backfill-ghin-courses.js --states=US-NY --projection-mode=none
  *   node scripts/backfill-ghin-courses.js --states=US-CT --validate-only
@@ -93,7 +95,56 @@ function createRunTotals() {
     skippedExisting: 0,
     failed: 0,
     failureBreakdown: createFailureBreakdown(),
-    performance: createPerformanceSummary()
+    performance: createPerformanceSummary(),
+    writeBreakdown: createWriteBreakdownSummary()
+  };
+}
+
+function createWriteBreakdownSummary() {
+  return {
+    flushCount: 0,
+    courseCount: 0,
+    teeCount: 0,
+    holeCount: 0,
+    buildPayloadDurationMs: createTimingMetric(),
+    coursesMergeDurationMs: createTimingMetric(),
+    teesMergeDurationMs: createTimingMetric(),
+    holesMergeDurationMs: createTimingMetric(),
+    commitDurationMs: createTimingMetric(),
+    totalDurationMs: createTimingMetric()
+  };
+}
+
+function recordWriteBreakdownSummary(summary, batchTiming) {
+  if (!summary || !batchTiming) {
+    return;
+  }
+
+  summary.flushCount += 1;
+  summary.courseCount += Number(batchTiming.courseCount || 0);
+  summary.teeCount += Number(batchTiming.teeCount || 0);
+  summary.holeCount += Number(batchTiming.holeCount || 0);
+
+  recordTimingMetric(summary.buildPayloadDurationMs, batchTiming.timings?.buildPayloadDurationMs);
+  recordTimingMetric(summary.coursesMergeDurationMs, batchTiming.timings?.coursesMergeDurationMs);
+  recordTimingMetric(summary.teesMergeDurationMs, batchTiming.timings?.teesMergeDurationMs);
+  recordTimingMetric(summary.holesMergeDurationMs, batchTiming.timings?.holesMergeDurationMs);
+  recordTimingMetric(summary.commitDurationMs, batchTiming.timings?.commitDurationMs);
+  recordTimingMetric(summary.totalDurationMs, batchTiming.timings?.totalDurationMs);
+}
+
+function summarizeWriteBreakdown(summary) {
+  return {
+    flushCount: summary.flushCount,
+    courseCount: summary.courseCount,
+    teeCount: summary.teeCount,
+    holeCount: summary.holeCount,
+    buildPayloadAvgMs: summary.buildPayloadDurationMs.avgMs,
+    coursesMergeAvgMs: summary.coursesMergeDurationMs.avgMs,
+    teesMergeAvgMs: summary.teesMergeDurationMs.avgMs,
+    holesMergeAvgMs: summary.holesMergeDurationMs.avgMs,
+    commitAvgMs: summary.commitDurationMs.avgMs,
+    totalFlushAvgMs: summary.totalDurationMs.avgMs
   };
 }
 
@@ -138,6 +189,9 @@ function classifyFailure(errorMessage) {
   if (
     message.includes('missing hole handicap/allocation data')
     || message.includes('missing holes[]')
+    || message.includes('invalid par')
+    || message.includes('invalid holeNumber')
+    || message.includes('CK_GHIN_Holes_Par')
   ) {
     return 'sourceData';
   }
@@ -163,6 +217,8 @@ function parseArgs(argv) {
     searchConcurrency: 6,
     syncConcurrency: 8,
     cacheWriteConcurrency: 4,
+    validationChunkSize: 25,
+    cacheBatchSize: 100,
     mirrorConcurrency: 2,
     projectionMode: 'callback',
     dbBatchSize: 500,
@@ -203,6 +259,12 @@ function parseArgs(argv) {
         break;
       case '--cache-write-concurrency':
         args.cacheWriteConcurrency = parsePositiveInt(value, args.cacheWriteConcurrency);
+        break;
+      case '--validation-chunk-size':
+        args.validationChunkSize = parsePositiveInt(value, args.validationChunkSize);
+        break;
+      case '--cache-batch-size':
+        args.cacheBatchSize = parsePositiveInt(value, args.cacheBatchSize);
         break;
       case '--mirror-concurrency':
         args.mirrorConcurrency = parsePositiveInt(value, args.mirrorConcurrency);
@@ -302,15 +364,211 @@ function chunk(array, size) {
   return chunks;
 }
 
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 1000) {
+    return `${Math.max(0, Math.round(ms || 0))}ms`;
+  }
+
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function buildFailureSamples(failures, limitPerClass = 3) {
+  const samples = {};
+
+  for (const failure of failures || []) {
+    const failureClass = failure.failureClass || 'other';
+    if (!samples[failureClass]) {
+      samples[failureClass] = [];
+    }
+
+    if (samples[failureClass].length < limitPerClass) {
+      samples[failureClass].push(String(failure.courseId));
+    }
+  }
+
+  return samples;
+}
+
+function summarizeStateForConsole(summary) {
+  return {
+    discovered: summary.discovered,
+    existing: summary.existing,
+    missing: summary.missing,
+    validated: summary.validated,
+    synced: summary.synced,
+    failed: summary.failed,
+    failureBreakdown: summary.failureBreakdown
+  };
+}
+
+function logStateProgress(state, label, summary, processedCount, totalCount, stateStartedAtMs, bufferedValidatedCount = 0, flushedCourseCount = 0) {
+  const flushedSegment = flushedCourseCount > 0 ? ` flushed=${flushedCourseCount}` : '';
+  console.log(
+    `[progress] ${state} ${label}: processed=${processedCount}/${totalCount} ` +
+    `validated=${summary.validated} buffered=${bufferedValidatedCount}${flushedSegment} synced=${summary.synced} failed=${summary.failed} ` +
+    `elapsed=${formatDuration(Date.now() - stateStartedAtMs)} ` +
+    `fetchAvg=${summary.performance.fetchDurationMs.avgMs}ms ` +
+    `upsertAvg=${summary.performance.upsertDurationMs.avgMs}ms`
+  );
+}
+
+function applyResultToSummary(result, summary, runTotals, checkpoint) {
+  recordPerformanceSummary(summary.performance, result.timings);
+  recordPerformanceSummary(runTotals.performance, result.timings);
+
+  if (result.status === 'validated') {
+    summary.validated += 1;
+    runTotals.validated += 1;
+    return;
+  }
+
+  if (result.status === 'synced' || result.status === 'cache-updated') {
+    summary.synced += 1;
+    checkpoint.totals.synced += 1;
+    return;
+  }
+
+  const failureClass = classifyFailure(result.error);
+  summary.failed += 1;
+  summary.failureBreakdown[failureClass] += 1;
+  checkpoint.totals.failureBreakdown[failureClass] += 1;
+  summary.failures.push({
+    ...result,
+    failureClass
+  });
+  checkpoint.totals.failed += 1;
+}
+
+async function fetchAndValidateCourse(client, courseId, validateCourseForSync) {
+  const courseStartedAtMs = Date.now();
+  let fetchDurationMs = 0;
+
+  try {
+    const fetchStartedAtMs = Date.now();
+    const course = await client.getCourse(courseId);
+    fetchDurationMs = Date.now() - fetchStartedAtMs;
+
+    if (!course) {
+      throw new Error('Course not found in GHIN detail endpoint');
+    }
+
+    const validationStartedAtMs = Date.now();
+    validateCourseForSync(course);
+    const validationDurationMs = Date.now() - validationStartedAtMs;
+
+    return {
+      courseId,
+      course,
+      status: 'validated',
+      timings: {
+        fetchDurationMs,
+        validationDurationMs,
+        noopDetectionDurationMs: 0,
+        upsertDurationMs: 0,
+        mirrorDurationMs: 0,
+        syncDurationMs: validationDurationMs,
+        totalDurationMs: Date.now() - courseStartedAtMs
+      }
+    };
+  } catch (error) {
+    return {
+      courseId,
+      status: 'failed',
+      error: error.message,
+      timings: {
+        fetchDurationMs,
+        validationDurationMs: 0,
+        noopDetectionDurationMs: 0,
+        upsertDurationMs: 0,
+        mirrorDurationMs: 0,
+        syncDurationMs: 0,
+        totalDurationMs: Date.now() - courseStartedAtMs
+      }
+    };
+  }
+}
+
+async function persistValidatedBatch(batch, bulkUpsertCoursesToCache) {
+  if (!batch.length) {
+    return { results: [], batchTimings: [] };
+  }
+
+  try {
+    const bulkResult = await bulkUpsertCoursesToCache(batch.map((item) => item.course), {
+      cacheSource: 'USGA_WEBHOOK',
+      assumeMissingCourses: true
+    });
+
+    const sharedUpsertDurationMs = Math.max(1, Math.round(Number(bulkResult.timings?.totalDurationMs || 0) / batch.length));
+
+    return {
+      results: batch.map((item) => ({
+        courseId: item.courseId,
+        status: 'cache-updated',
+        timings: {
+          fetchDurationMs: item.timings.fetchDurationMs,
+          validationDurationMs: item.timings.validationDurationMs,
+          noopDetectionDurationMs: 0,
+          upsertDurationMs: sharedUpsertDurationMs,
+          mirrorDurationMs: 0,
+          syncDurationMs: item.timings.validationDurationMs + sharedUpsertDurationMs,
+          totalDurationMs: item.timings.fetchDurationMs + item.timings.validationDurationMs + sharedUpsertDurationMs
+        }
+      })),
+      batchTimings: [bulkResult]
+    };
+  } catch (error) {
+    if (batch.length === 1) {
+      const item = batch[0];
+      return {
+        results: [{
+          courseId: item.courseId,
+          status: 'failed',
+          error: error.message,
+          timings: {
+            fetchDurationMs: item.timings.fetchDurationMs,
+            validationDurationMs: item.timings.validationDurationMs,
+            noopDetectionDurationMs: 0,
+            upsertDurationMs: 0,
+            mirrorDurationMs: 0,
+            syncDurationMs: item.timings.validationDurationMs,
+            totalDurationMs: item.timings.totalDurationMs
+          }
+        }],
+        batchTimings: []
+      };
+    }
+
+    const midpoint = Math.ceil(batch.length / 2);
+    const left = await persistValidatedBatch(batch.slice(0, midpoint), bulkUpsertCoursesToCache);
+    const right = await persistValidatedBatch(batch.slice(midpoint), bulkUpsertCoursesToCache);
+    return {
+      results: [...left.results, ...right.results],
+      batchTimings: [...left.batchTimings, ...right.batchTimings]
+    };
+  }
+}
+
+async function persistValidatedCoursesInBatches(validatedCourses, cacheBatchSize, bulkUpsertCoursesToCache) {
+  const results = [];
+  const batchTimings = [];
+  for (const batch of chunk(validatedCourses, cacheBatchSize)) {
+    const batchResult = await persistValidatedBatch(batch, bulkUpsertCoursesToCache);
+    results.push(...batchResult.results);
+    batchTimings.push(...batchResult.batchTimings);
+  }
+  return { results, batchTimings };
+}
+
 async function getExistingCourseIds(courseIds, batchSize) {
   const sql = database.sql;
   const existing = new Set();
 
   for (const idsChunk of chunk(courseIds, batchSize)) {
     const rows = await database.query(
-      `SELECT courseId
-       FROM GHIN_Courses
-       WHERE courseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+      `SELECT CourseId AS courseId
+       FROM dbo.GHIN_Courses
+       WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
       {
         idsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(idsChunk) }
       }
@@ -366,6 +624,7 @@ async function discoverStateCourseIds(client, state, pageSize) {
 }
 
 async function run() {
+  const runStartedAtMs = Date.now();
   const args = parseArgs(process.argv.slice(2));
   const checkpoint = args.validateOnly
     ? createEmptyCheckpoint()
@@ -378,7 +637,11 @@ async function run() {
   process.env.GHIN_CACHE_WRITE_CONCURRENCY = String(args.cacheWriteConcurrency);
 
   const client = require('../src/services/usaGhinApiClient');
-  const { processCourseSync, validateCourseForSync } = require('../src/services/courseSyncService');
+  const {
+    bulkUpsertCoursesToCache,
+    processCourseSync,
+    validateCourseForSync
+  } = require('../src/services/courseSyncService');
 
   const allStates = (args.states && args.states.length)
     ? args.states
@@ -391,10 +654,7 @@ async function run() {
   const runTotals = createRunTotals();
 
   console.log(`Starting GHIN course backfill for ${pendingStates.length} state partition(s).`);
-  console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize}`);
-  if (!args.validateOnly) {
-    console.log(`Checkpoint: ${args.checkpointPath}`);
-  }
+  console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} validationChunkSize=${args.validationChunkSize} cacheBatchSize=${args.cacheBatchSize} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize}`);
 
   await database.connect();
 
@@ -407,6 +667,7 @@ async function run() {
 
   for (const stateResult of discoveryResults) {
     const { state, courses } = stateResult;
+    const stateStartedAtMs = Date.now();
     const courseIds = courses.map((course) => String(course.courseId)).filter(Boolean);
     const existingIds = await getExistingCourseIds(courseIds, args.dbBatchSize);
     const missingIds = courseIds.filter((courseId) => !existingIds.has(courseId));
@@ -420,6 +681,7 @@ async function run() {
       failed: 0,
       failureBreakdown: createFailureBreakdown(),
       performance: createPerformanceSummary(),
+      writeBreakdown: createWriteBreakdownSummary(),
       failures: []
     };
 
@@ -430,96 +692,131 @@ async function run() {
     console.log(`[plan] ${state}: discovered=${summary.discovered} existing=${summary.existing} missing=${summary.missing}`);
 
     if ((!args.dryRun || args.validateOnly) && missingIds.length > 0) {
-      const syncResults = await mapLimit(missingIds, args.syncConcurrency, async (courseId) => {
-        const courseStartedAtMs = Date.now();
-        let fetchDurationMs = 0;
+      let processedCount = 0;
+      let validatedBuffer = [];
 
-        try {
-          const fetchStartedAtMs = Date.now();
-          const course = await client.getCourse(courseId);
-          fetchDurationMs = Date.now() - fetchStartedAtMs;
+      for (const missingChunk of chunk(missingIds, args.validationChunkSize)) {
+        let syncResults;
+        let flushedCourseCount = 0;
 
-          if (!course) {
-            throw new Error('Course not found in GHIN detail endpoint');
-          }
+        if (args.validateOnly || args.projectionMode === 'none') {
+          const preparedResults = await mapLimit(missingChunk, args.syncConcurrency, async (courseId) => {
+            return fetchAndValidateCourse(client, courseId, validateCourseForSync);
+          });
+
+          const validationFailures = preparedResults.filter((result) => result.status === 'failed');
+          const validatedCourses = preparedResults.filter((result) => result.status === 'validated');
+          summary.validated += validatedCourses.length;
+          runTotals.validated += validatedCourses.length;
+
+          console.log(
+            `[progress] ${state} validation: chunk=${processedCount + 1}-${processedCount + missingChunk.length}/${missingIds.length} ` +
+            `validated=${validatedCourses.length} failed=${validationFailures.length} ` +
+            `elapsed=${formatDuration(Date.now() - stateStartedAtMs)}`
+          );
 
           if (args.validateOnly) {
-            const validationStartedAtMs = Date.now();
-            validateCourseForSync(course);
-            const validationDurationMs = Date.now() - validationStartedAtMs;
+            syncResults = validationFailures;
+          } else {
+            validatedBuffer.push(...validatedCourses);
+            const flushCount = Math.floor(validatedBuffer.length / args.cacheBatchSize) * args.cacheBatchSize;
+            let persistedResults = [];
+
+            if (flushCount > 0) {
+              const coursesToFlush = validatedBuffer.splice(0, flushCount);
+              flushedCourseCount = coursesToFlush.length;
+              const flushResult = await persistValidatedCoursesInBatches(
+                coursesToFlush,
+                args.cacheBatchSize,
+                bulkUpsertCoursesToCache
+              );
+              persistedResults = flushResult.results;
+              for (const batchTiming of flushResult.batchTimings) {
+                recordWriteBreakdownSummary(summary.writeBreakdown, batchTiming);
+                recordWriteBreakdownSummary(runTotals.writeBreakdown, batchTiming);
+              }
+            }
+
+            syncResults = [...validationFailures, ...persistedResults];
+          }
+        } else {
+          syncResults = await mapLimit(missingChunk, args.syncConcurrency, async (courseId) => {
+          const courseStartedAtMs = Date.now();
+          let fetchDurationMs = 0;
+
+          try {
+            const fetchStartedAtMs = Date.now();
+            const course = await client.getCourse(courseId);
+            fetchDurationMs = Date.now() - fetchStartedAtMs;
+
+            if (!course) {
+              throw new Error('Course not found in GHIN detail endpoint');
+            }
+
+            const syncResult = await processCourseSync(course, {
+              detectNoop: false,
+              syncMirror: true
+            });
+
             return {
               courseId,
-              status: 'validated',
+              status: 'synced',
               timings: {
                 fetchDurationMs,
-                validationDurationMs,
-                noopDetectionDurationMs: 0,
-                upsertDurationMs: 0,
-                mirrorDurationMs: 0,
-                syncDurationMs: validationDurationMs,
+                validationDurationMs: Number(syncResult.timings?.validationDurationMs || 0),
+                noopDetectionDurationMs: Number(syncResult.timings?.noopDetectionDurationMs || 0),
+                upsertDurationMs: Number(syncResult.timings?.upsertDurationMs || 0),
+                mirrorDurationMs: Number(syncResult.timings?.mirrorDurationMs || 0),
+                syncDurationMs: Number(syncResult.timings?.totalDurationMs || 0),
+                totalDurationMs: Date.now() - courseStartedAtMs
+              }
+            };
+          } catch (error) {
+            return {
+              courseId,
+              status: 'failed',
+              error: error.message,
+              timings: {
+                fetchDurationMs,
+                validationDurationMs: Number(error.syncTimings?.validationDurationMs || 0),
+                noopDetectionDurationMs: Number(error.syncTimings?.noopDetectionDurationMs || 0),
+                upsertDurationMs: Number(error.syncTimings?.upsertDurationMs || 0),
+                mirrorDurationMs: Number(error.syncTimings?.mirrorDurationMs || 0),
+                syncDurationMs: Number(error.syncTimings?.totalDurationMs || 0),
                 totalDurationMs: Date.now() - courseStartedAtMs
               }
             };
           }
-
-          const syncResult = await processCourseSync(course, {
-            // Backfill already filtered to IDs missing from CacheDB, so hash/no-op
-            // detection is redundant work and adds read contention before upsert.
-            detectNoop: false,
-            syncMirror: args.projectionMode === 'callback'
-          });
-
-          return {
-            courseId,
-            status: args.projectionMode === 'callback' ? 'synced' : 'cache-updated',
-            timings: {
-              fetchDurationMs,
-              validationDurationMs: Number(syncResult.timings?.validationDurationMs || 0),
-              noopDetectionDurationMs: Number(syncResult.timings?.noopDetectionDurationMs || 0),
-              upsertDurationMs: Number(syncResult.timings?.upsertDurationMs || 0),
-              mirrorDurationMs: Number(syncResult.timings?.mirrorDurationMs || 0),
-              syncDurationMs: Number(syncResult.timings?.totalDurationMs || 0),
-              totalDurationMs: Date.now() - courseStartedAtMs
-            }
-          };
-        } catch (error) {
-          return {
-            courseId,
-            status: 'failed',
-            error: error.message,
-            timings: {
-              fetchDurationMs,
-              validationDurationMs: Number(error.syncTimings?.validationDurationMs || 0),
-              noopDetectionDurationMs: Number(error.syncTimings?.noopDetectionDurationMs || 0),
-              upsertDurationMs: Number(error.syncTimings?.upsertDurationMs || 0),
-              mirrorDurationMs: Number(error.syncTimings?.mirrorDurationMs || 0),
-              syncDurationMs: Number(error.syncTimings?.totalDurationMs || 0),
-              totalDurationMs: Date.now() - courseStartedAtMs
-            }
-          };
+        });
         }
-      });
 
-      for (const result of syncResults) {
-        recordPerformanceSummary(summary.performance, result.timings);
-        recordPerformanceSummary(runTotals.performance, result.timings);
-
-        if (result.status === 'validated') {
-          summary.validated += 1;
-        } else if (result.status === 'synced' || result.status === 'cache-updated') {
-          summary.synced += 1;
-          checkpoint.totals.synced += 1;
-        } else {
-          const failureClass = classifyFailure(result.error);
-          summary.failed += 1;
-          summary.failureBreakdown[failureClass] += 1;
-          checkpoint.totals.failureBreakdown[failureClass] += 1;
-          summary.failures.push({
-            ...result,
-            failureClass
-          });
-          checkpoint.totals.failed += 1;
+        for (const result of syncResults) {
+          applyResultToSummary(result, summary, runTotals, checkpoint);
         }
+
+        processedCount += missingChunk.length;
+        logStateProgress(state, 'chunk', summary, processedCount, missingIds.length, stateStartedAtMs, validatedBuffer.length, flushedCourseCount);
+      }
+
+      if (!args.validateOnly && args.projectionMode === 'none' && validatedBuffer.length > 0) {
+        const finalFlushCourseCount = validatedBuffer.length;
+        const flushResult = await persistValidatedCoursesInBatches(
+          validatedBuffer,
+          args.cacheBatchSize,
+          bulkUpsertCoursesToCache
+        );
+        validatedBuffer = [];
+
+        for (const batchTiming of flushResult.batchTimings) {
+          recordWriteBreakdownSummary(summary.writeBreakdown, batchTiming);
+          recordWriteBreakdownSummary(runTotals.writeBreakdown, batchTiming);
+        }
+
+        for (const result of flushResult.results) {
+          applyResultToSummary(result, summary, runTotals, checkpoint);
+        }
+
+        logStateProgress(state, 'final-flush', summary, processedCount, missingIds.length, stateStartedAtMs, 0, finalFlushCourseCount);
       }
     }
 
@@ -527,7 +824,6 @@ async function run() {
     runSummaries[state] = summary;
     runTotals.discovered += summary.discovered;
     runTotals.missing += summary.missing;
-    runTotals.validated += summary.validated;
     runTotals.synced += summary.synced;
     runTotals.skippedExisting += summary.existing;
     runTotals.failed += summary.failed;
@@ -549,12 +845,6 @@ async function run() {
       `[done] ${state}: validated=${summary.validated} synced=${summary.synced} failed=${summary.failed} ` +
       `(retryable=${summary.failureBreakdown.retryableOperational}, sourceData=${summary.failureBreakdown.sourceData}, other=${summary.failureBreakdown.other})`
     );
-    console.log(
-      `[timing] ${state}: fetchAvg=${summary.performance.fetchDurationMs.avgMs}ms ` +
-      `syncAvg=${summary.performance.syncDurationMs.avgMs}ms ` +
-      `upsertAvg=${summary.performance.upsertDurationMs.avgMs}ms ` +
-      `totalAvg=${summary.performance.totalDurationMs.avgMs}ms`
-    );
   }
 
   if (!args.validateOnly) {
@@ -562,22 +852,17 @@ async function run() {
   }
   await database.close();
 
+  console.log(`[elapsed] total=${formatDuration(Date.now() - runStartedAtMs)}`);
   console.log(args.validateOnly ? 'GHIN course preflight validation complete.' : 'GHIN course backfill complete.');
   console.log(JSON.stringify({
     mode: args.validateOnly ? 'validate-only' : args.dryRun ? 'dry-run' : 'backfill',
     projectionMode: args.projectionMode,
+    totalElapsedMs: Date.now() - runStartedAtMs,
+    totalElapsedSeconds: Number(((Date.now() - runStartedAtMs) / 1000).toFixed(1)),
     runStates: pendingStates,
-    totals: runTotals,
-    runTotals,
-    validationTotals: args.validateOnly
-      ? { validated: runTotals.validated, failed: runTotals.failed }
-      : null,
-    stateSummaries: runSummaries,
-    runStateSummaries: runSummaries,
-    checkpointCompletedStates: args.validateOnly ? 0 : checkpoint.completedStates.length,
-    checkpointTotals: args.validateOnly ? null : checkpoint.totals,
-    checkpointFailedStateCount: args.validateOnly ? 0 : Object.keys(checkpoint.failedStates).length,
-    checkpoint: args.validateOnly ? null : args.checkpointPath
+    stateSummaries: Object.fromEntries(
+      Object.entries(runSummaries).map(([state, summary]) => [state, summarizeStateForConsole(summary)])
+    )
   }, null, 2));
 }
 

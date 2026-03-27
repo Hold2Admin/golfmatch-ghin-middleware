@@ -54,9 +54,16 @@ async function getCourse(ghinCourseId) {
     logger.info(`[DATABASE] Fetching course ${ghinCourseId}`);
     
     const courses = await db.query(
-      `SELECT courseId, courseName, city, state, country, facilityId, updatedAt 
-       FROM GHIN_Courses 
-       WHERE courseId = @courseId`,
+      `SELECT
+          CourseId AS courseId,
+          CourseName AS courseName,
+          City AS city,
+          State AS state,
+          Country AS country,
+          FacilityId AS facilityId,
+          UpdatedAt AS updatedAt
+       FROM dbo.GHIN_Courses
+       WHERE CourseId = @courseId`,
       { courseId: { type: db.sql.VarChar, value: ghinCourseId } }
     );
     
@@ -68,17 +75,27 @@ async function getCourse(ghinCourseId) {
     
     // Get tees for this course
     const tees = await db.query(
-      `SELECT teeId, teeName, gender, isDefault,
-              courseRating18 AS courseRating,
-              slopeRating18 AS slope,
-              par18 AS par,
-              yardage18 AS yardage,
-              teeSetSide,
-              courseRatingF9, slopeRatingF9, parF9, yardageF9,
-              courseRatingB9, slopeRatingB9, parB9, yardageB9,
-              updatedAt
-       FROM GHIN_Tees
-       WHERE courseId = @courseId
+      `SELECT
+          TeeId AS teeId,
+          TeeName AS teeName,
+          Gender AS gender,
+          IsDefault AS isDefault,
+          CourseRating18 AS courseRating,
+          SlopeRating18 AS slope,
+          Par18 AS par,
+          Yardage18 AS yardage,
+          TeeSetSide AS teeSetSide,
+          CourseRatingF9 AS courseRatingF9,
+          SlopeRatingF9 AS slopeRatingF9,
+          ParF9 AS parF9,
+          YardageF9 AS yardageF9,
+          CourseRatingB9 AS courseRatingB9,
+          SlopeRatingB9 AS slopeRatingB9,
+          ParB9 AS parB9,
+          YardageB9 AS yardageB9,
+          UpdatedAt AS updatedAt
+       FROM dbo.GHIN_Tees
+       WHERE CourseId = @courseId
        ORDER BY gender, teeName`,
       { courseId: { type: db.sql.VarChar, value: ghinCourseId } }
     );
@@ -86,11 +103,15 @@ async function getCourse(ghinCourseId) {
     // Get holes for each tee
     for (let tee of tees) {
       const holes = await db.query(
-        `SELECT holeNumber, par, handicap, yardage
-         FROM GHIN_Holes
-         WHERE teeId = @teeId
+        `SELECT
+            HoleNumber AS holeNumber,
+            Par AS par,
+            Handicap AS handicap,
+            Yardage AS yardage
+         FROM dbo.GHIN_Holes
+         WHERE TeeId = @teeId
          ORDER BY holeNumber`,
-        { teeId: { type: db.sql.VarChar, value: tee.teeId } }
+        { teeId: { type: db.sql.VarChar(50), value: tee.teeId } }
       );
       tee.holes = holes;
     }
@@ -126,13 +147,21 @@ async function searchCourses(params) {
     logger.info('[DATABASE] Searching courses', params);
 
     const query = `
-      SELECT courseId, courseName, city, state, country, facilityId, facilityName, updatedAt
-      FROM GHIN_Courses
-      WHERE (@courseName IS NULL OR courseName LIKE '%' + @courseName + '%')
-        AND (@city IS NULL OR city LIKE '%' + @city + '%')
-        AND (@state IS NULL OR state = @state)
-        AND (@country IS NULL OR country = @country)
-      ORDER BY courseName`;
+      SELECT
+        CourseId AS courseId,
+        CourseName AS courseName,
+        City AS city,
+        State AS state,
+        Country AS country,
+        FacilityId AS facilityId,
+        FacilityName AS facilityName,
+        UpdatedAt AS updatedAt
+      FROM dbo.GHIN_Courses
+      WHERE (@courseName IS NULL OR CourseName LIKE '%' + @courseName + '%')
+        AND (@city IS NULL OR City LIKE '%' + @city + '%')
+        AND (@state IS NULL OR State = @state)
+        AND (@country IS NULL OR Country = @country)
+      ORDER BY CourseName`;
 
     const courses = await db.query(query, {
       courseName: { type: db.sql.NVarChar, value: params.courseName || null },

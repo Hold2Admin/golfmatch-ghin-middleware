@@ -164,7 +164,7 @@ async function run() {
     for (const idsChunk of chunk(safeIds, 500)) {
       const inList = idsChunk.map(id => `'${id}'`).join(',');
       const cached = await pool.request().query(
-        `SELECT courseId FROM GHIN_Courses WHERE courseId IN (${inList})`
+        `SELECT CourseId AS courseId FROM dbo.GHIN_Courses WHERE CourseId IN (${inList})`
       );
       cached.recordset.forEach((row) => {
         if (row.courseId != null) {

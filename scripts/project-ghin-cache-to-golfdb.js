@@ -252,10 +252,10 @@ async function getCandidateCourseIds(args) {
   const limitClause = args.limit > 0 ? 'TOP (@limit)' : '';
   if (args.states.length) {
     const rows = await database.query(
-      `SELECT ${limitClause} courseId
+      `SELECT ${limitClause} CourseId AS courseId
        FROM dbo.GHIN_Courses
-       WHERE state IN (SELECT [value] FROM OPENJSON(@statesJson))
-       ORDER BY TRY_CONVERT(BIGINT, courseId), courseId`,
+       WHERE State IN (SELECT [value] FROM OPENJSON(@statesJson))
+       ORDER BY TRY_CONVERT(BIGINT, CourseId), CourseId`,
       {
         ...(args.limit > 0 ? { limit: { type: dbSql.Int, value: args.limit } } : {}),
         statesJson: { type: dbSql.NVarChar(dbSql.MAX), value: JSON.stringify(args.states) }
@@ -266,9 +266,9 @@ async function getCandidateCourseIds(args) {
   }
 
   const rows = await database.query(
-    `SELECT ${limitClause} courseId
+    `SELECT ${limitClause} CourseId AS courseId
      FROM dbo.GHIN_Courses
-     ORDER BY TRY_CONVERT(BIGINT, courseId), courseId`,
+     ORDER BY TRY_CONVERT(BIGINT, CourseId), CourseId`,
     args.limit > 0 ? { limit: { type: dbSql.Int, value: args.limit } } : {}
   );
 
@@ -287,25 +287,54 @@ async function loadCacheProjectionData(courseIds) {
 
   const [courseRows, teeRows, holeRows] = await Promise.all([
     database.query(
-      `SELECT courseId, courseName, shortCourseName, facilityName, city, state, country, facilityId
+      `SELECT
+          CourseId AS courseId,
+          CourseName AS courseName,
+          ShortCourseName AS shortCourseName,
+          FacilityName AS facilityName,
+          City AS city,
+          State AS state,
+          Country AS country,
+          FacilityId AS facilityId
        FROM dbo.GHIN_Courses
-       WHERE courseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+       WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
       params
     ),
     database.query(
-      `SELECT courseId, teeId, teeName, teeSetSide, gender, isDefault,
-              courseRating18, slopeRating18, par18, yardage18,
-              courseRatingF9, slopeRatingF9, parF9, yardageF9,
-              courseRatingB9, slopeRatingB9, parB9, yardageB9
+      `SELECT
+          CourseId AS courseId,
+          TeeId AS teeId,
+          TeeName AS teeName,
+          TeeSetSide AS teeSetSide,
+          Gender AS gender,
+          IsDefault AS isDefault,
+          CourseRating18 AS courseRating18,
+          SlopeRating18 AS slopeRating18,
+          Par18 AS par18,
+          Yardage18 AS yardage18,
+          CourseRatingF9 AS courseRatingF9,
+          SlopeRatingF9 AS slopeRatingF9,
+          ParF9 AS parF9,
+          YardageF9 AS yardageF9,
+          CourseRatingB9 AS courseRatingB9,
+          SlopeRatingB9 AS slopeRatingB9,
+          ParB9 AS parB9,
+          YardageB9 AS yardageB9
        FROM dbo.GHIN_Tees
-       WHERE courseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+       WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
       params
     ),
     database.query(
-      `SELECT t.courseId, h.teeId, h.holeNumber, h.par, h.handicap, h.yardage
+      `SELECT
+          t.CourseId AS courseId,
+          t.TeeId AS teeId,
+          h.HoleNumber AS holeNumber,
+          h.Par AS par,
+          h.Handicap AS handicap,
+          h.Yardage AS yardage
        FROM dbo.GHIN_Holes h
-       INNER JOIN dbo.GHIN_Tees t ON t.teeId = h.teeId
-       WHERE t.courseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
+       WHERE t.CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
       params
     )
   ]);
@@ -441,13 +470,13 @@ async function getGolfPayloadHashes(pool, courseIds) {
   const rows = await pool.request()
     .input('idsJson', sql.NVarChar(sql.MAX), JSON.stringify(courseIds))
     .query(`
-      SELECT GhinCourseId, PayloadHash
+      SELECT CourseId, PayloadHash
       FROM dbo.GhinRuntimeCourses
-      WHERE GhinCourseId IN (SELECT [value] FROM OPENJSON(@idsJson))
+      WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))
     `);
 
   return new Map(
-    (rows.recordset || []).map((row) => [String(row.GhinCourseId), row.PayloadHash ? String(row.PayloadHash) : null])
+    (rows.recordset || []).map((row) => [String(row.CourseId), row.PayloadHash ? String(row.PayloadHash) : null])
   );
 }
 
@@ -481,7 +510,7 @@ async function applyProjectionBatch(pool, data) {
           SELECT *
           FROM OPENJSON(@coursesJson)
           WITH (
-            GhinCourseId VARCHAR(50) '$.ghinCourseId',
+            CourseId VARCHAR(50) '$.ghinCourseId',
             FacilityId VARCHAR(50) '$.facilityId',
             FacilityName NVARCHAR(255) '$.facilityName',
             CourseName NVARCHAR(150) '$.courseName',
@@ -493,7 +522,7 @@ async function applyProjectionBatch(pool, data) {
             SourceLastChangedAt NVARCHAR(50) '$.sourceLastChangedAt'
           )
         ) AS src
-          ON target.GhinCourseId = src.GhinCourseId
+          ON target.CourseId = src.CourseId
         WHEN MATCHED THEN
           UPDATE SET
             FacilityId = src.FacilityId,
@@ -508,29 +537,29 @@ async function applyProjectionBatch(pool, data) {
             LastSyncedAt = GETUTCDATE(),
             UpdatedAt = GETUTCDATE()
         WHEN NOT MATCHED THEN
-          INSERT (GhinCourseId, FacilityId, FacilityName, CourseName, ShortCourseName, City, State, Country, PayloadHash, SourceLastChangedAt, LastSyncedAt, CreatedAt, UpdatedAt)
-          VALUES (src.GhinCourseId, src.FacilityId, src.FacilityName, src.CourseName, src.ShortCourseName, src.City, src.[State], src.Country, src.PayloadHash, TRY_CONVERT(datetime2, src.SourceLastChangedAt), GETUTCDATE(), GETUTCDATE(), GETUTCDATE());
+          INSERT (CourseId, FacilityId, FacilityName, CourseName, ShortCourseName, City, State, Country, PayloadHash, SourceLastChangedAt, LastSyncedAt, CreatedAt, UpdatedAt)
+          VALUES (src.CourseId, src.FacilityId, src.FacilityName, src.CourseName, src.ShortCourseName, src.City, src.[State], src.Country, src.PayloadHash, TRY_CONVERT(datetime2, src.SourceLastChangedAt), GETUTCDATE(), GETUTCDATE(), GETUTCDATE());
 
         DELETE h
         FROM dbo.GhinRuntimeHoles h
         INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
-        WHERE t.GhinCourseId IN (
-          SELECT GhinCourseId
+        WHERE t.CourseId IN (
+          SELECT CourseId
           FROM OPENJSON(@coursesJson)
-          WITH (GhinCourseId VARCHAR(50) '$.ghinCourseId')
+          WITH (CourseId VARCHAR(50) '$.ghinCourseId')
         );
 
         DELETE FROM dbo.GhinRuntimeTees
-        WHERE GhinCourseId IN (
-          SELECT GhinCourseId
+        WHERE CourseId IN (
+          SELECT CourseId
           FROM OPENJSON(@coursesJson)
-          WITH (GhinCourseId VARCHAR(50) '$.ghinCourseId')
+          WITH (CourseId VARCHAR(50) '$.ghinCourseId')
         );
 
         INSERT INTO dbo.GhinRuntimeTees (
           GhinRuntimeCourseId,
-          GhinCourseId,
-          GhinTeeId,
+          CourseId,
+          TeeId,
           TeeName,
           TeeSetSide,
           Gender,
@@ -553,8 +582,8 @@ async function applyProjectionBatch(pool, data) {
         )
         SELECT
           courses.GhinRuntimeCourseId,
-          src.GhinCourseId,
-          src.GhinTeeId,
+          src.CourseId,
+          src.TeeId,
           src.TeeName,
           src.TeeSetSide,
           src.Gender,
@@ -576,8 +605,8 @@ async function applyProjectionBatch(pool, data) {
           GETUTCDATE()
         FROM OPENJSON(@teesJson)
         WITH (
-          GhinCourseId VARCHAR(50) '$.ghinCourseId',
-          GhinTeeId NVARCHAR(64) '$.ghinTeeId',
+          CourseId VARCHAR(50) '$.ghinCourseId',
+          TeeId NVARCHAR(64) '$.ghinTeeId',
           TeeName NVARCHAR(255) '$.teeName',
           TeeSetSide NVARCHAR(50) '$.teeSetSide',
           Gender NVARCHAR(50) '$.gender',
@@ -596,11 +625,11 @@ async function applyProjectionBatch(pool, data) {
           YardageB9 INT '$.yardageB9'
         ) AS src
         INNER JOIN dbo.GhinRuntimeCourses courses
-          ON courses.GhinCourseId = src.GhinCourseId;
+          ON courses.CourseId = src.CourseId;
 
         INSERT INTO dbo.GhinRuntimeHoles (
           GhinRuntimeTeeId,
-          GhinTeeId,
+          TeeId,
           HoleNumber,
           Par,
           Handicap,
@@ -611,7 +640,7 @@ async function applyProjectionBatch(pool, data) {
         )
         SELECT
           runtimeTees.GhinRuntimeTeeId,
-          src.GhinTeeId,
+          src.TeeId,
           src.HoleNumber,
           src.Par,
           src.Handicap,
@@ -621,16 +650,16 @@ async function applyProjectionBatch(pool, data) {
           GETUTCDATE()
         FROM OPENJSON(@holesJson)
         WITH (
-          GhinCourseId VARCHAR(50) '$.ghinCourseId',
-          GhinTeeId NVARCHAR(64) '$.ghinTeeId',
+          CourseId VARCHAR(50) '$.ghinCourseId',
+          TeeId NVARCHAR(64) '$.ghinTeeId',
           HoleNumber INT '$.holeNumber',
           Par INT '$.par',
           Handicap INT '$.handicap',
           Yardage INT '$.yardage'
         ) AS src
         INNER JOIN dbo.GhinRuntimeTees runtimeTees
-          ON runtimeTees.GhinCourseId = src.GhinCourseId
-         AND runtimeTees.GhinTeeId = src.GhinTeeId;
+          ON runtimeTees.CourseId = src.CourseId
+         AND runtimeTees.TeeId = src.TeeId;
       `);
 
     await tx.commit();

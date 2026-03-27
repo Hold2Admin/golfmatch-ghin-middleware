@@ -264,11 +264,11 @@ async function getCacheRows(database, ids, state, limit) {
 
   if (ids.length) {
     return database.query(
-      `SELECT c.courseId, c.courseName, c.state, c.lastPayloadHash
+      `SELECT c.CourseId AS courseId, c.CourseName AS courseName, c.State AS state, c.LastPayloadHash AS lastPayloadHash
        FROM dbo.GHIN_Courses c
        INNER JOIN OPENJSON(@idsJson) WITH (courseId VARCHAR(50) '$') src
-         ON src.courseId = c.courseId
-       ORDER BY TRY_CONVERT(BIGINT, c.courseId), c.courseId`,
+         ON src.courseId = c.CourseId
+       ORDER BY TRY_CONVERT(BIGINT, c.CourseId), c.CourseId`,
       {
         idsJson: { type: dbSql.NVarChar(dbSql.MAX), value: JSON.stringify(ids) }
       }
@@ -277,10 +277,10 @@ async function getCacheRows(database, ids, state, limit) {
 
   if (state) {
     return database.query(
-      `SELECT ${limit > 0 ? 'TOP (@limit)' : ''} c.courseId, c.courseName, c.state, c.lastPayloadHash
+      `SELECT ${limit > 0 ? 'TOP (@limit)' : ''} c.CourseId AS courseId, c.CourseName AS courseName, c.State AS state, c.LastPayloadHash AS lastPayloadHash
        FROM dbo.GHIN_Courses c
-       WHERE c.state = @state
-       ORDER BY TRY_CONVERT(BIGINT, c.courseId), c.courseId`,
+       WHERE c.State = @state
+       ORDER BY TRY_CONVERT(BIGINT, c.CourseId), c.CourseId`,
       {
         ...(limit > 0 ? { limit: { type: dbSql.Int, value: limit } } : {}),
         state: { type: dbSql.VarChar(10), value: state }
@@ -289,9 +289,9 @@ async function getCacheRows(database, ids, state, limit) {
   }
 
   return database.query(
-    `SELECT ${limit > 0 ? 'TOP (@limit)' : ''} c.courseId, c.courseName, c.state, c.lastPayloadHash
+    `SELECT ${limit > 0 ? 'TOP (@limit)' : ''} c.CourseId AS courseId, c.CourseName AS courseName, c.State AS state, c.LastPayloadHash AS lastPayloadHash
      FROM dbo.GHIN_Courses c
-     ORDER BY TRY_CONVERT(BIGINT, c.courseId), c.courseId`,
+     ORDER BY TRY_CONVERT(BIGINT, c.CourseId), c.CourseId`,
     limit > 0 ? { limit: { type: dbSql.Int, value: limit } } : {}
   );
 }
@@ -304,14 +304,14 @@ async function getGolfMirrorRows(pool, courseIds) {
   const rows = await pool.request()
     .input('idsJson', sql.NVarChar(sql.MAX), JSON.stringify(courseIds))
     .query(`
-      SELECT c.GhinCourseId, c.PayloadHash
+      SELECT c.CourseId, c.PayloadHash
       FROM dbo.GhinRuntimeCourses c
       INNER JOIN OPENJSON(@idsJson) WITH (courseId VARCHAR(50) '$') src
-        ON src.courseId = c.GhinCourseId
+        ON src.courseId = c.CourseId
     `);
 
   return new Map(
-    (rows.recordset || []).map((row) => [String(row.GhinCourseId), {
+    (rows.recordset || []).map((row) => [String(row.CourseId), {
       payloadHash: row.PayloadHash ? String(row.PayloadHash) : null
     }])
   );

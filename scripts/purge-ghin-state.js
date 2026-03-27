@@ -96,16 +96,16 @@ async function getCacheCounts(state) {
   const dbSql = database.sql;
   const rows = await database.query(
     `SELECT
-       (SELECT COUNT(1) FROM dbo.GHIN_Courses WHERE state = @state) AS courseCount,
+       (SELECT COUNT(1) FROM dbo.GHIN_Courses WHERE State = @state) AS courseCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Tees t
-        INNER JOIN dbo.GHIN_Courses c ON c.courseId = t.courseId
-        WHERE c.state = @state) AS teeCount,
+        INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
+        WHERE c.State = @state) AS teeCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Holes h
-        INNER JOIN dbo.GHIN_Tees t ON t.teeId = h.teeId
-        INNER JOIN dbo.GHIN_Courses c ON c.courseId = t.courseId
-        WHERE c.state = @state) AS holeCount`,
+        INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
+        INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
+        WHERE c.State = @state) AS holeCount`,
     {
       state: { type: dbSql.VarChar(10), value: state }
     }
@@ -192,19 +192,8 @@ async function purgeCacheState(state) {
     await req
       .input('state', dbSql.VarChar(10), state)
       .query(`
-        DELETE h
-        FROM dbo.GHIN_Holes h
-        INNER JOIN dbo.GHIN_Tees t ON t.teeId = h.teeId
-        INNER JOIN dbo.GHIN_Courses c ON c.courseId = t.courseId
-        WHERE c.state = @state;
-
-        DELETE t
-        FROM dbo.GHIN_Tees t
-        INNER JOIN dbo.GHIN_Courses c ON c.courseId = t.courseId
-        WHERE c.state = @state;
-
         DELETE FROM dbo.GHIN_Courses
-        WHERE state = @state;
+        WHERE State = @state;
       `);
 
     await tx.commit();
