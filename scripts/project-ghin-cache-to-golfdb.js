@@ -102,6 +102,30 @@ function chunk(items, size) {
   return chunks;
 }
 
+function formatDurationMs(durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return '0s';
+  }
+
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}
+
+function formatPercent(completed, total) {
+  if (!Number.isFinite(total) || total <= 0) {
+    return '0.0';
+  }
+
+  return ((completed / total) * 100).toFixed(1);
+}
+
 function normalizeText(value) {
   if (value === null || value === undefined) return null;
   const normalized = String(value).trim();
@@ -470,13 +494,13 @@ async function getGolfPayloadHashes(pool, courseIds) {
   const rows = await pool.request()
     .input('idsJson', sql.NVarChar(sql.MAX), JSON.stringify(courseIds))
     .query(`
-      SELECT CourseId, PayloadHash
+      SELECT GhinCourseId AS courseId, PayloadHash
       FROM dbo.GhinRuntimeCourses
-      WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))
+      WHERE GhinCourseId IN (SELECT [value] FROM OPENJSON(@idsJson))
     `);
 
   return new Map(
-    (rows.recordset || []).map((row) => [String(row.CourseId), row.PayloadHash ? String(row.PayloadHash) : null])
+    (rows.recordset || []).map((row) => [String(row.courseId), row.PayloadHash ? String(row.PayloadHash) : null])
   );
 }
 
@@ -510,7 +534,7 @@ async function applyProjectionBatch(pool, data) {
           SELECT *
           FROM OPENJSON(@coursesJson)
           WITH (
-            CourseId VARCHAR(50) '$.ghinCourseId',
+            GhinCourseId VARCHAR(50) '$.ghinCourseId',
             FacilityId VARCHAR(50) '$.facilityId',
             FacilityName NVARCHAR(255) '$.facilityName',
             CourseName NVARCHAR(150) '$.courseName',
@@ -522,7 +546,7 @@ async function applyProjectionBatch(pool, data) {
             SourceLastChangedAt NVARCHAR(50) '$.sourceLastChangedAt'
           )
         ) AS src
-          ON target.CourseId = src.CourseId
+          ON target.GhinCourseId = src.GhinCourseId
         WHEN MATCHED THEN
           UPDATE SET
             FacilityId = src.FacilityId,
@@ -537,29 +561,29 @@ async function applyProjectionBatch(pool, data) {
             LastSyncedAt = GETUTCDATE(),
             UpdatedAt = GETUTCDATE()
         WHEN NOT MATCHED THEN
-          INSERT (CourseId, FacilityId, FacilityName, CourseName, ShortCourseName, City, State, Country, PayloadHash, SourceLastChangedAt, LastSyncedAt, CreatedAt, UpdatedAt)
-          VALUES (src.CourseId, src.FacilityId, src.FacilityName, src.CourseName, src.ShortCourseName, src.City, src.[State], src.Country, src.PayloadHash, TRY_CONVERT(datetime2, src.SourceLastChangedAt), GETUTCDATE(), GETUTCDATE(), GETUTCDATE());
+          INSERT (GhinCourseId, FacilityId, FacilityName, CourseName, ShortCourseName, City, State, Country, PayloadHash, SourceLastChangedAt, LastSyncedAt, CreatedAt, UpdatedAt)
+          VALUES (src.GhinCourseId, src.FacilityId, src.FacilityName, src.CourseName, src.ShortCourseName, src.City, src.[State], src.Country, src.PayloadHash, TRY_CONVERT(datetime2, src.SourceLastChangedAt), GETUTCDATE(), GETUTCDATE(), GETUTCDATE());
 
         DELETE h
         FROM dbo.GhinRuntimeHoles h
         INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
-        WHERE t.CourseId IN (
-          SELECT CourseId
+        WHERE t.GhinCourseId IN (
+          SELECT GhinCourseId
           FROM OPENJSON(@coursesJson)
-          WITH (CourseId VARCHAR(50) '$.ghinCourseId')
+          WITH (GhinCourseId VARCHAR(50) '$.ghinCourseId')
         );
 
         DELETE FROM dbo.GhinRuntimeTees
-        WHERE CourseId IN (
-          SELECT CourseId
+        WHERE GhinCourseId IN (
+          SELECT GhinCourseId
           FROM OPENJSON(@coursesJson)
-          WITH (CourseId VARCHAR(50) '$.ghinCourseId')
+          WITH (GhinCourseId VARCHAR(50) '$.ghinCourseId')
         );
 
         INSERT INTO dbo.GhinRuntimeTees (
           GhinRuntimeCourseId,
-          CourseId,
-          TeeId,
+          GhinCourseId,
+          GhinTeeId,
           TeeName,
           TeeSetSide,
           Gender,
@@ -582,8 +606,8 @@ async function applyProjectionBatch(pool, data) {
         )
         SELECT
           courses.GhinRuntimeCourseId,
-          src.CourseId,
-          src.TeeId,
+          src.GhinCourseId,
+          src.GhinTeeId,
           src.TeeName,
           src.TeeSetSide,
           src.Gender,
@@ -605,8 +629,8 @@ async function applyProjectionBatch(pool, data) {
           GETUTCDATE()
         FROM OPENJSON(@teesJson)
         WITH (
-          CourseId VARCHAR(50) '$.ghinCourseId',
-          TeeId NVARCHAR(64) '$.ghinTeeId',
+          GhinCourseId VARCHAR(50) '$.ghinCourseId',
+          GhinTeeId NVARCHAR(64) '$.ghinTeeId',
           TeeName NVARCHAR(255) '$.teeName',
           TeeSetSide NVARCHAR(50) '$.teeSetSide',
           Gender NVARCHAR(50) '$.gender',
@@ -625,11 +649,11 @@ async function applyProjectionBatch(pool, data) {
           YardageB9 INT '$.yardageB9'
         ) AS src
         INNER JOIN dbo.GhinRuntimeCourses courses
-          ON courses.CourseId = src.CourseId;
+          ON courses.GhinCourseId = src.GhinCourseId;
 
         INSERT INTO dbo.GhinRuntimeHoles (
           GhinRuntimeTeeId,
-          TeeId,
+          GhinTeeId,
           HoleNumber,
           Par,
           Handicap,
@@ -640,7 +664,7 @@ async function applyProjectionBatch(pool, data) {
         )
         SELECT
           runtimeTees.GhinRuntimeTeeId,
-          src.TeeId,
+          src.GhinTeeId,
           src.HoleNumber,
           src.Par,
           src.Handicap,
@@ -650,16 +674,16 @@ async function applyProjectionBatch(pool, data) {
           GETUTCDATE()
         FROM OPENJSON(@holesJson)
         WITH (
-          CourseId VARCHAR(50) '$.ghinCourseId',
-          TeeId NVARCHAR(64) '$.ghinTeeId',
+          GhinCourseId VARCHAR(50) '$.ghinCourseId',
+          GhinTeeId NVARCHAR(64) '$.ghinTeeId',
           HoleNumber INT '$.holeNumber',
           Par INT '$.par',
           Handicap INT '$.handicap',
           Yardage INT '$.yardage'
         ) AS src
         INNER JOIN dbo.GhinRuntimeTees runtimeTees
-          ON runtimeTees.CourseId = src.CourseId
-         AND runtimeTees.TeeId = src.TeeId;
+          ON runtimeTees.GhinCourseId = src.GhinCourseId
+         AND runtimeTees.GhinTeeId = src.GhinTeeId;
       `);
 
     await tx.commit();
@@ -683,6 +707,7 @@ async function run() {
 
   try {
     const candidateIds = await getCandidateCourseIds(args);
+    const requestedBatches = chunk(candidateIds, args.batchSize);
     const summary = {
       mode: args.mode,
       dryRun: args.dryRun,
@@ -697,7 +722,21 @@ async function run() {
       failures: []
     };
 
-    for (const idsChunk of chunk(candidateIds, args.batchSize)) {
+    console.log(
+      `Starting GolfDB projection: requested=${summary.requested} mode=${summary.mode} dryRun=${summary.dryRun} batchSize=${summary.batchSize} batches=${requestedBatches.length}`
+    );
+
+    const runStartedAtMs = Date.now();
+
+    for (const [batchIndex, idsChunk] of requestedBatches.entries()) {
+      const batchStartedAtMs = Date.now();
+      const batchNumber = batchIndex + 1;
+      const processedBeforeBatch = Math.min(batchIndex * args.batchSize, summary.requested);
+
+      console.log(
+        `[projection] batch ${batchNumber}/${requestedBatches.length} starting requested=${processedBeforeBatch + 1}-${Math.min(processedBeforeBatch + idsChunk.length, summary.requested)} of ${summary.requested}`
+      );
+
       const cacheData = await loadCacheProjectionData(idsChunk);
 
       for (const invalid of cacheData.invalidCourses) {
@@ -771,6 +810,18 @@ async function run() {
           }
         }
       }
+
+      const requestedProcessed = Math.min((batchIndex + 1) * args.batchSize, summary.requested);
+      const elapsedMs = Date.now() - runStartedAtMs;
+      const avgRequestedPerMs = requestedProcessed > 0 ? elapsedMs / requestedProcessed : 0;
+      const remainingRequested = Math.max(summary.requested - requestedProcessed, 0);
+      const etaMs = remainingRequested > 0 && avgRequestedPerMs > 0
+        ? remainingRequested * avgRequestedPerMs
+        : 0;
+
+      console.log(
+        `[projection] batch ${batchNumber}/${requestedBatches.length} complete ${requestedProcessed}/${summary.requested} (${formatPercent(requestedProcessed, summary.requested)}%) projected=${summary.projected} missing=${summary.missing} stale=${summary.stale} nochange=${summary.nochange} failed=${summary.failed} batchElapsed=${formatDurationMs(Date.now() - batchStartedAtMs)} totalElapsed=${formatDurationMs(elapsedMs)} eta=${formatDurationMs(etaMs)}`
+      );
     }
 
     console.log(JSON.stringify(summary, null, 2));

@@ -26,12 +26,13 @@ const database = require('../src/services/database');
 const { loadSecrets } = require('../src/config/secrets');
 
 const CHECKPOINT_PATH = path.join(__dirname, 'logs', 'ghin-course-backfill-checkpoint.json');
-const US_STATE_CODES = [
-  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
-  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
-  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
-  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
-  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
+const US_JURISDICTION_CODES = [
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL',
+  'GA', 'GU', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA',
+  'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV',
+  'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA',
+  'PR', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'VI',
+  'WA', 'WV', 'WI', 'WY', 'AS', 'MP'
 ];
 
 function createFailureBreakdown() {
@@ -61,6 +62,16 @@ function createPerformanceSummary() {
     mirrorDurationMs: createTimingMetric(),
     syncDurationMs: createTimingMetric(),
     totalDurationMs: createTimingMetric()
+  };
+}
+
+function createOrchestrationSummary() {
+  return {
+    discoveryDurationMs: createTimingMetric(),
+    existingIdsDurationMs: createTimingMetric(),
+    validationToFlushWaitDurationMs: createTimingMetric(),
+    checkpointSaveDurationMs: createTimingMetric(),
+    stateTotalDurationMs: createTimingMetric()
   };
 }
 
@@ -94,8 +105,10 @@ function createRunTotals() {
     synced: 0,
     skippedExisting: 0,
     failed: 0,
+    incompleteDiscoveryStates: [],
     failureBreakdown: createFailureBreakdown(),
     performance: createPerformanceSummary(),
+    orchestration: createOrchestrationSummary(),
     writeBreakdown: createWriteBreakdownSummary()
   };
 }
@@ -145,6 +158,35 @@ function summarizeWriteBreakdown(summary) {
     holesMergeAvgMs: summary.holesMergeDurationMs.avgMs,
     commitAvgMs: summary.commitDurationMs.avgMs,
     totalFlushAvgMs: summary.totalDurationMs.avgMs
+  };
+}
+
+function summarizeOrchestrationSummary(summary) {
+  return {
+    discoveryTotalMs: summary.discoveryDurationMs.totalMs,
+    existingIdsTotalMs: summary.existingIdsDurationMs.totalMs,
+    validationToFlushWaitTotalMs: summary.validationToFlushWaitDurationMs.totalMs,
+    checkpointSaveTotalMs: summary.checkpointSaveDurationMs.totalMs,
+    stateTotalMs: summary.stateTotalDurationMs.totalMs
+  };
+}
+
+function summarizePerformanceSummary(summary) {
+  return {
+    fetchAvgMs: summary.fetchDurationMs.avgMs,
+    fetchTotalMs: summary.fetchDurationMs.totalMs,
+    validationAvgMs: summary.validationDurationMs.avgMs,
+    validationTotalMs: summary.validationDurationMs.totalMs,
+    noopDetectionAvgMs: summary.noopDetectionDurationMs.avgMs,
+    noopDetectionTotalMs: summary.noopDetectionDurationMs.totalMs,
+    upsertAvgMs: summary.upsertDurationMs.avgMs,
+    upsertTotalMs: summary.upsertDurationMs.totalMs,
+    mirrorAvgMs: summary.mirrorDurationMs.avgMs,
+    mirrorTotalMs: summary.mirrorDurationMs.totalMs,
+    syncAvgMs: summary.syncDurationMs.avgMs,
+    syncTotalMs: summary.syncDurationMs.totalMs,
+    totalCourseAvgMs: summary.totalDurationMs.avgMs,
+    totalCourseMs: summary.totalDurationMs.totalMs
   };
 }
 
@@ -397,7 +439,9 @@ function summarizeStateForConsole(summary) {
     validated: summary.validated,
     synced: summary.synced,
     failed: summary.failed,
-    failureBreakdown: summary.failureBreakdown
+    failureBreakdown: summary.failureBreakdown,
+    orchestration: summarizeOrchestrationSummary(summary.orchestration),
+    writeBreakdown: summarizeWriteBreakdown(summary.writeBreakdown)
   };
 }
 
@@ -588,12 +632,17 @@ async function discoverStateCourseIds(client, state, pageSize) {
   const discovered = new Map();
   const seenPageFingerprints = new Set();
   let page = 1;
+  let stopReason = 'empty';
+  let lastPageResultCount = 0;
 
   while (true) {
     const results = await client.searchCourses({ state, page, perPage: pageSize });
     if (!Array.isArray(results) || results.length === 0) {
+      stopReason = 'empty';
       break;
     }
+
+    lastPageResultCount = results.length;
 
     const pageIds = results
       .map((course) => String(course.courseId || '').trim())
@@ -601,6 +650,7 @@ async function discoverStateCourseIds(client, state, pageSize) {
 
     const fingerprint = pageIds.join(',');
     if (seenPageFingerprints.has(fingerprint)) {
+      stopReason = 'repeat-page';
       break;
     }
     seenPageFingerprints.add(fingerprint);
@@ -613,14 +663,25 @@ async function discoverStateCourseIds(client, state, pageSize) {
       newIds += 1;
     }
 
-    if (newIds === 0 || results.length < pageSize) {
+    if (newIds === 0) {
+      stopReason = 'no-new-ids';
+      break;
+    }
+
+    if (results.length < pageSize) {
+      stopReason = 'short-page';
       break;
     }
 
     page += 1;
   }
 
-  return Array.from(discovered.values());
+  return {
+    courses: Array.from(discovered.values()),
+    stopReason,
+    pageCount: page,
+    capped: stopReason === 'repeat-page' && lastPageResultCount > 0 && discovered.size >= lastPageResultCount
+  };
 }
 
 async function run() {
@@ -645,7 +706,7 @@ async function run() {
 
   const allStates = (args.states && args.states.length)
     ? args.states
-    : US_STATE_CODES.map((code) => `US-${code}`);
+    : US_JURISDICTION_CODES.map((code) => `US-${code}`);
 
   const pendingStates = args.validateOnly
     ? allStates
@@ -653,23 +714,31 @@ async function run() {
   const runSummaries = {};
   const runTotals = createRunTotals();
 
-  console.log(`Starting GHIN course backfill for ${pendingStates.length} state partition(s).`);
+  console.log(`Starting GHIN course backfill for ${pendingStates.length} US jurisdiction partition(s).`);
   console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} validationChunkSize=${args.validationChunkSize} cacheBatchSize=${args.cacheBatchSize} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize}`);
 
   await database.connect();
 
   const discoveryResults = await mapLimit(pendingStates, args.searchConcurrency, async (state) => {
     console.log(`[discover] ${state}...`);
-    const courses = await discoverStateCourseIds(client, state, args.pageSize);
-    console.log(`[discover] ${state}: ${courses.length} course(s)`);
-    return { state, courses };
+    const discoveryStartedAtMs = Date.now();
+    const discoveryResult = await discoverStateCourseIds(client, state, args.pageSize);
+    const warnSuffix = discoveryResult.capped ? ` warning=incomplete stop=${discoveryResult.stopReason}` : '';
+    console.log(`[discover] ${state}: ${discoveryResult.courses.length} course(s)${warnSuffix}`);
+    return {
+      state,
+      ...discoveryResult,
+      discoveryDurationMs: Date.now() - discoveryStartedAtMs
+    };
   });
 
   for (const stateResult of discoveryResults) {
-    const { state, courses } = stateResult;
+    const { state, courses, discoveryDurationMs, stopReason, capped } = stateResult;
     const stateStartedAtMs = Date.now();
     const courseIds = courses.map((course) => String(course.courseId)).filter(Boolean);
+    const existingIdsStartedAtMs = Date.now();
     const existingIds = await getExistingCourseIds(courseIds, args.dbBatchSize);
+    const existingIdsDurationMs = Date.now() - existingIdsStartedAtMs;
     const missingIds = courseIds.filter((courseId) => !existingIds.has(courseId));
 
     const summary = {
@@ -679,21 +748,34 @@ async function run() {
       validated: 0,
       synced: 0,
       failed: 0,
+      discoveryStopReason: stopReason,
+      discoveryIncomplete: capped,
       failureBreakdown: createFailureBreakdown(),
       performance: createPerformanceSummary(),
+      orchestration: createOrchestrationSummary(),
       writeBreakdown: createWriteBreakdownSummary(),
       failures: []
     };
+
+    recordTimingMetric(summary.orchestration.discoveryDurationMs, discoveryDurationMs);
+    recordTimingMetric(runTotals.orchestration.discoveryDurationMs, discoveryDurationMs);
+    recordTimingMetric(summary.orchestration.existingIdsDurationMs, existingIdsDurationMs);
+    recordTimingMetric(runTotals.orchestration.existingIdsDurationMs, existingIdsDurationMs);
 
     checkpoint.totals.discovered += summary.discovered;
     checkpoint.totals.skippedExisting += summary.existing;
     checkpoint.totals.missing += summary.missing;
 
-    console.log(`[plan] ${state}: discovered=${summary.discovered} existing=${summary.existing} missing=${summary.missing}`);
+    console.log(
+      `[plan] ${state}: discovered=${summary.discovered} existing=${summary.existing} missing=${summary.missing} ` +
+      `discover=${formatDuration(discoveryDurationMs)} existingDiff=${formatDuration(existingIdsDurationMs)}` +
+      (summary.discoveryIncomplete ? ` warning=incomplete-discovery stop=${summary.discoveryStopReason}` : '')
+    );
 
     if ((!args.dryRun || args.validateOnly) && missingIds.length > 0) {
       let processedCount = 0;
       let validatedBuffer = [];
+      let validatedBufferStartedAtMs = null;
 
       for (const missingChunk of chunk(missingIds, args.validationChunkSize)) {
         let syncResults;
@@ -718,11 +800,19 @@ async function run() {
           if (args.validateOnly) {
             syncResults = validationFailures;
           } else {
+            if (validatedCourses.length > 0 && validatedBuffer.length === 0) {
+              validatedBufferStartedAtMs = Date.now();
+            }
             validatedBuffer.push(...validatedCourses);
             const flushCount = Math.floor(validatedBuffer.length / args.cacheBatchSize) * args.cacheBatchSize;
             let persistedResults = [];
 
             if (flushCount > 0) {
+              if (validatedBufferStartedAtMs != null) {
+                const waitDurationMs = Date.now() - validatedBufferStartedAtMs;
+                recordTimingMetric(summary.orchestration.validationToFlushWaitDurationMs, waitDurationMs);
+                recordTimingMetric(runTotals.orchestration.validationToFlushWaitDurationMs, waitDurationMs);
+              }
               const coursesToFlush = validatedBuffer.splice(0, flushCount);
               flushedCourseCount = coursesToFlush.length;
               const flushResult = await persistValidatedCoursesInBatches(
@@ -735,6 +825,8 @@ async function run() {
                 recordWriteBreakdownSummary(summary.writeBreakdown, batchTiming);
                 recordWriteBreakdownSummary(runTotals.writeBreakdown, batchTiming);
               }
+
+              validatedBufferStartedAtMs = validatedBuffer.length > 0 ? Date.now() : null;
             }
 
             syncResults = [...validationFailures, ...persistedResults];
@@ -800,6 +892,11 @@ async function run() {
 
       if (!args.validateOnly && args.projectionMode === 'none' && validatedBuffer.length > 0) {
         const finalFlushCourseCount = validatedBuffer.length;
+        if (validatedBufferStartedAtMs != null) {
+          const waitDurationMs = Date.now() - validatedBufferStartedAtMs;
+          recordTimingMetric(summary.orchestration.validationToFlushWaitDurationMs, waitDurationMs);
+          recordTimingMetric(runTotals.orchestration.validationToFlushWaitDurationMs, waitDurationMs);
+        }
         const flushResult = await persistValidatedCoursesInBatches(
           validatedBuffer,
           args.cacheBatchSize,
@@ -827,6 +924,9 @@ async function run() {
     runTotals.synced += summary.synced;
     runTotals.skippedExisting += summary.existing;
     runTotals.failed += summary.failed;
+    if (summary.discoveryIncomplete) {
+      runTotals.incompleteDiscoveryStates.push(state);
+    }
     runTotals.failureBreakdown.retryableOperational += summary.failureBreakdown.retryableOperational;
     runTotals.failureBreakdown.sourceData += summary.failureBreakdown.sourceData;
     runTotals.failureBreakdown.other += summary.failureBreakdown.other;
@@ -838,17 +938,30 @@ async function run() {
 
     if (!args.validateOnly) {
       checkpoint.completedStates.push(state);
+      const checkpointSaveStartedAtMs = Date.now();
       saveCheckpoint(args.checkpointPath, checkpoint);
+      const checkpointSaveDurationMs = Date.now() - checkpointSaveStartedAtMs;
+      recordTimingMetric(summary.orchestration.checkpointSaveDurationMs, checkpointSaveDurationMs);
+      recordTimingMetric(runTotals.orchestration.checkpointSaveDurationMs, checkpointSaveDurationMs);
     }
+
+    const stateTotalDurationMs = Date.now() - stateStartedAtMs;
+    recordTimingMetric(summary.orchestration.stateTotalDurationMs, stateTotalDurationMs);
+    recordTimingMetric(runTotals.orchestration.stateTotalDurationMs, stateTotalDurationMs);
 
     console.log(
       `[done] ${state}: validated=${summary.validated} synced=${summary.synced} failed=${summary.failed} ` +
-      `(retryable=${summary.failureBreakdown.retryableOperational}, sourceData=${summary.failureBreakdown.sourceData}, other=${summary.failureBreakdown.other})`
+      `(retryable=${summary.failureBreakdown.retryableOperational}, sourceData=${summary.failureBreakdown.sourceData}, other=${summary.failureBreakdown.other}) ` +
+      `stateTotal=${formatDuration(stateTotalDurationMs)} flushWait=${formatDuration(summary.orchestration.validationToFlushWaitDurationMs.totalMs)} checkpointSave=${formatDuration(summary.orchestration.checkpointSaveDurationMs.totalMs)}` +
+      (summary.discoveryIncomplete ? ` discovery=incomplete(${summary.discoveryStopReason})` : '')
     );
   }
 
   if (!args.validateOnly) {
+    const checkpointSaveStartedAtMs = Date.now();
     saveCheckpoint(args.checkpointPath, checkpoint);
+    const checkpointSaveDurationMs = Date.now() - checkpointSaveStartedAtMs;
+    recordTimingMetric(runTotals.orchestration.checkpointSaveDurationMs, checkpointSaveDurationMs);
   }
   await database.close();
 
@@ -860,9 +973,19 @@ async function run() {
     totalElapsedMs: Date.now() - runStartedAtMs,
     totalElapsedSeconds: Number(((Date.now() - runStartedAtMs) / 1000).toFixed(1)),
     runStates: pendingStates,
-    stateSummaries: Object.fromEntries(
-      Object.entries(runSummaries).map(([state, summary]) => [state, summarizeStateForConsole(summary)])
-    )
+    summary: {
+      discovered: runTotals.discovered,
+      missing: runTotals.missing,
+      validated: runTotals.validated,
+      synced: runTotals.synced,
+      skippedExisting: runTotals.skippedExisting,
+      failed: runTotals.failed,
+      incompleteDiscoveryStates: runTotals.incompleteDiscoveryStates,
+      failureBreakdown: runTotals.failureBreakdown,
+      performance: summarizePerformanceSummary(runTotals.performance),
+      orchestration: summarizeOrchestrationSummary(runTotals.orchestration),
+      writeBreakdown: summarizeWriteBreakdown(runTotals.writeBreakdown)
+    }
   }, null, 2));
 }
 
