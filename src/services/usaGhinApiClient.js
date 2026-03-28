@@ -519,8 +519,21 @@ async function getScore(scoreId) {
  *   We store these as negative floats (lower HI = better player).
  */
 function _normalizeGolfer(g) {
-  const handicapIndex = _parseHandicapIndex(g.handicap_index ?? g.hi ?? null);
-  const lowHi         = _parseHandicapIndex(g.low_hi !== undefined ? String(g.low_hi) : null);
+  const hiModified = Boolean(g.hi_modified);
+  const hiWithdrawn = Boolean(g.hi_withdrawn);
+  const hiValue = g.hi_value ?? null;
+  const handicapIndexDisplay = _normalizeHandicapDisplay(
+    g.hi_display ?? g.handicap_index ?? g.hi ?? null,
+    { hiModified, hiWithdrawn, hiValue }
+  );
+  const handicapIndex = _parseHandicapIndex(g.handicap_index ?? g.hi_display ?? g.hi ?? null);
+  const lowHi = _parseHandicapIndex(g.low_hi !== undefined ? String(g.low_hi) : null);
+  const status = _normalizeGolferStatus(g.status, {
+    hiModified,
+    hiWithdrawn,
+    hiValue,
+    handicapIndexDisplay
+  });
 
   return {
     ghinNumber:       String(g.ghin ?? g.id ?? ''),
@@ -531,11 +544,18 @@ function _normalizeGolfer(g) {
     clubId:           g.club_id     != null ? String(g.club_id)         : null,
     associationId:    g.association_id != null ? String(g.association_id) : null,
     handicapIndex:    handicapIndex !== null ? String(handicapIndex) : null,
+    handicapIndexDisplay,
+    handicapFlags: {
+      modified: hiModified,
+      withdrawn: hiWithdrawn,
+      noHandicap: handicapIndexDisplay === 'NH'
+    },
     lowHandicapIndex: lowHi,
     trendIndicator:   g.hi_trend    ?? null,
     lastRevisionDate: g.revision_date ? new Date(g.revision_date).toISOString() : null,
     gender:           g.gender      ?? null,
-    status:           (g.status     ?? '').toLowerCase()
+    status,
+    membershipStatus: (g.status ?? '').trim().toLowerCase() || null
   };
 }
 
@@ -548,10 +568,71 @@ function _normalizeGolfer(g) {
 function _parseHandicapIndex(raw) {
   if (raw === null || raw === undefined) return null;
   const str = String(raw).trim();
-  if (str.startsWith('+') || str.toUpperCase().startsWith('P')) {
-    return -parseFloat(str.replace(/^[+Pp]/, ''));
+  if (!str) return null;
+
+  const upper = str.toUpperCase();
+  if (upper === 'NH' || upper === 'WD') {
+    return null;
   }
-  return parseFloat(str);
+
+  const normalized = upper.endsWith('M') ? str.slice(0, -1).trim() : str;
+  if (normalized.startsWith('+') || normalized.toUpperCase().startsWith('P')) {
+    const plusValue = parseFloat(normalized.replace(/^[+Pp]/, ''));
+    return Number.isFinite(plusValue) ? -plusValue : null;
+  }
+
+  const parsed = parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function _normalizeHandicapDisplay(raw, { hiModified = false, hiWithdrawn = false, hiValue = null } = {}) {
+  if (hiWithdrawn) {
+    return 'WD';
+  }
+
+  const value = String(raw ?? '').trim();
+  const upper = value.toUpperCase();
+  if (!value) {
+    if (hiValue === 999) return 'NH';
+    return null;
+  }
+
+  if (upper === 'NH' || hiValue === 999) {
+    return 'NH';
+  }
+
+  if (upper === 'WD') {
+    return 'WD';
+  }
+
+  if (hiModified && !upper.endsWith('M')) {
+    return `${value}M`;
+  }
+
+  return value;
+}
+
+function _normalizeGolferStatus(status, { hiModified = false, hiWithdrawn = false, hiValue = null, handicapIndexDisplay = null } = {}) {
+  const normalizedStatus = String(status ?? '').trim().toLowerCase();
+  const normalizedDisplay = String(handicapIndexDisplay ?? '').trim().toUpperCase();
+
+  if (hiWithdrawn || normalizedDisplay === 'WD') {
+    return 'withdrawn';
+  }
+
+  if (normalizedDisplay === 'NH' || hiValue === 999) {
+    return 'no-handicap';
+  }
+
+  if (hiModified || normalizedDisplay.endsWith('M')) {
+    return 'modified';
+  }
+
+  if (normalizedStatus) {
+    return normalizedStatus;
+  }
+
+  return 'unknown';
 }
 
 function _normalizeState(raw) {
