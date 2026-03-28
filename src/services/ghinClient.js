@@ -44,6 +44,48 @@ async function searchPlayers(params) {
   return usaGhinApiClient.searchGolfers(params);
 }
 
+async function requestGolferProductAccess(ghinNumber, email) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Requesting golfer product access for ${ghinNumber}`);
+    return {
+      message: 'Mock golfer product access requested',
+      ghinNumber: String(ghinNumber),
+      status: 'pending'
+    };
+  }
+
+  logger.info(`[LIVE] Requesting golfer product access for ${ghinNumber}`);
+  return usaGhinApiClient.requestGolferProductAccess(ghinNumber, email);
+}
+
+async function updateGolferProductAccessStatus(ghinNumber, status) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Updating golfer product access for ${ghinNumber} -> ${status}`);
+    return {
+      message: 'Mock golfer product access status updated',
+      ghinNumber: String(ghinNumber),
+      status: String(status)
+    };
+  }
+
+  logger.info(`[LIVE] Updating golfer product access for ${ghinNumber} -> ${status}`);
+  return usaGhinApiClient.updateGolferProductAccessStatus(ghinNumber, status);
+}
+
+async function revokeGolferProductAccess(ghinNumber) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Revoking golfer product access for ${ghinNumber}`);
+    return {
+      message: 'Mock golfer product access revoked',
+      ghinNumber: String(ghinNumber),
+      status: 'inactive'
+    };
+  }
+
+  logger.info(`[LIVE] Revoking golfer product access for ${ghinNumber}`);
+  return usaGhinApiClient.revokeGolferProductAccess(ghinNumber);
+}
+
 /**
  * Get course by GHIN course ID
  * @param {string} ghinCourseId 
@@ -194,6 +236,9 @@ async function searchCourses(params) {
 module.exports = {
   getPlayer,
   searchPlayers,
+  requestGolferProductAccess,
+  updateGolferProductAccessStatus,
+  revokeGolferProductAccess,
   getCourse,
   searchCourses
 };

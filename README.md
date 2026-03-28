@@ -2,7 +2,7 @@
 
 Middleware service for transforming and securing USGA GHIN/WHS API data for the Fore Play golf pairing application.
 
-Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, and additive `ShortCourseName` hardening are complete and validated. Golf Match runtime reads are already cut over to golfdb mirror tables. The current middleware milestone is replacing stage 1 per-course CacheDB writes with a bulk CacheDB writer so national-scale catalog population is sustainable.
+Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, and full sandbox-accessible catalog projection into golfdb runtime are complete and validated. Golf Match runtime reads are already cut over to golfdb mirror tables. The approval-track path now proceeds directly through the standalone staging-readiness checklist; further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
 
 ## Architecture
 
@@ -139,7 +139,7 @@ Critical secrets stored in Azure Key Vault:
 
 - **Phase 1 / 1.5** (Validated): Live GHIN connectivity, separate cache DB, runtime mirror sync, webhook/reconciliation automation, additive course-name hardening
 - **Phase 2** (Validated core flow): Golf Match runtime read-path cutover, state-partition catalog discovery/backfill, and CacheDB -> GolfDB bulk runtime projection
-- **Phase 2 Remaining Work** (Current): Replace stage 1 per-course CacheDB writes with a bulk CacheDB writer, then resume broader catalog backfill at national scale
+- **Phase 2 Remaining Work** (Deferred scaling): Replace stage 1 per-course CacheDB writes with a bulk CacheDB writer when national-scale catalog tuning becomes active work again
 - **Phase 3**: Live handicap pulls and player caching
 - **Phase 4+**: Expanded score-posting and operational hardening
 

@@ -208,4 +208,162 @@ router.post(
   }
 );
 
+/**
+ * POST /api/v1/players/:ghinNumber/request-access
+ * Request golfer product access for an acknowledged user.
+ */
+router.post(
+  '/:ghinNumber/request-access',
+  [
+    param('ghinNumber')
+      .isNumeric()
+      .isLength({ min: 6, max: 10 })
+      .withMessage('GHIN number must be 6-10 digits'),
+    body('email')
+      .isEmail()
+      .withMessage('Valid email is required')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid request body',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumber } = req.params;
+    const { email } = req.body;
+
+    try {
+      logger.info(`Requesting golfer product access for ${ghinNumber}`);
+
+      const player = await ghinClient.getPlayer(ghinNumber);
+      if (!player) {
+        return res.status(404).json({
+          error: {
+            code: 'GHIN_PLAYER_NOT_FOUND',
+            message: `Player with GHIN number ${ghinNumber} not found`,
+            retryable: false
+          }
+        });
+      }
+
+      const result = await ghinClient.requestGolferProductAccess(ghinNumber, email);
+
+      res.json({
+        ghinNumber,
+        status: 'pending',
+        requestedAt: new Date().toISOString(),
+        result,
+        player: transformGhinPlayer(player)
+      });
+    } catch (error) {
+      logger.error('Error requesting golfer product access', { ghinNumber, error: error.message });
+      res.status(502).json({
+        error: {
+          code: 'GHIN_API_ERROR',
+          message: error.message || 'Failed to request golfer product access',
+          retryable: false
+        }
+      });
+    }
+  }
+);
+
+router.post(
+  '/:ghinNumber/approve-access',
+  [
+    param('ghinNumber')
+      .isNumeric()
+      .isLength({ min: 6, max: 10 })
+      .withMessage('GHIN number must be 6-10 digits')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid GHIN number format',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumber } = req.params;
+
+    try {
+      logger.info(`Approving golfer product access for ${ghinNumber}`);
+
+      const result = await ghinClient.updateGolferProductAccessStatus(ghinNumber, 'approved');
+
+      res.json({
+        ghinNumber,
+        status: 'approved',
+        updatedAt: new Date().toISOString(),
+        result
+      });
+    } catch (error) {
+      logger.error('Error approving golfer product access', { ghinNumber, error: error.message });
+      res.status(502).json({
+        error: {
+          code: 'GHIN_API_ERROR',
+          message: error.message || 'Failed to approve golfer product access',
+          retryable: false
+        }
+      });
+    }
+  }
+);
+
+router.delete(
+  '/:ghinNumber/revoke-access',
+  [
+    param('ghinNumber')
+      .isNumeric()
+      .isLength({ min: 6, max: 10 })
+      .withMessage('GHIN number must be 6-10 digits')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid GHIN number format',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumber } = req.params;
+
+    try {
+      logger.info(`Revoking golfer product access for ${ghinNumber}`);
+
+      const result = await ghinClient.revokeGolferProductAccess(ghinNumber);
+
+      res.json({
+        ghinNumber,
+        status: 'inactive',
+        updatedAt: new Date().toISOString(),
+        result
+      });
+    } catch (error) {
+      logger.error('Error revoking golfer product access', { ghinNumber, error: error.message });
+      res.status(502).json({
+        error: {
+          code: 'GHIN_API_ERROR',
+          message: error.message || 'Failed to revoke golfer product access',
+          retryable: false
+        }
+      });
+    }
+  }
+);
+
 module.exports = router;

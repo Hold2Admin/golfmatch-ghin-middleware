@@ -64,7 +64,9 @@ const ALLOWLIST = [
   { method: 'GET',  pattern: /^\/courses\/\d+\.json$/ },
   { method: 'POST', pattern: /^\/scores\.json$/ },
   { method: 'GET',  pattern: /^\/scores\/search\.json$/ },
-  { method: 'POST', pattern: /^\/golfers\/\d+\/request_golfer_product_access\.json$/ },
+  { method: 'POST', pattern: /^\/users\/golfers\/\d+\/request_golfer_product_access\.json$/ },
+  { method: 'POST', pattern: /^\/users\/\d+\/golfers\/\d+\/update_golfer_product_access_status\.json$/ },
+  { method: 'DELETE', pattern: /^\/users\/golfers\/\d+\/revoke_golfer_product_access\.json$/ },
   { method: 'GET',  pattern: /^\/user\/webhook_settings\.json$/ },
   { method: 'PATCH',pattern: /^\/user\/webhook_settings\.json$/ },
   { method: 'DELETE',pattern: /^\/user\/webhook_settings\.json$/ },
@@ -86,7 +88,7 @@ function isAllowlisted(method, path) {
 // ============================================================
 // Token cache
 // ============================================================
-let _tokenCache = null; // { token: string, expiresAt: number }
+let _tokenCache = null; // { token: string, userId: string|null, expiresAt: number }
 let _tokenRefreshPromise = null;
 
 async function getToken() {
@@ -99,6 +101,19 @@ async function getToken() {
   }
 
   return _refreshToken();
+}
+
+async function getVendorUserId() {
+  if (_tokenCache && _tokenCache.userId && _tokenCache.expiresAt > Date.now() + 60_000) {
+    return _tokenCache.userId;
+  }
+
+  await _refreshToken();
+  if (!_tokenCache?.userId) {
+    throw new Error('USGA login response missing vendor user id');
+  }
+
+  return _tokenCache.userId;
 }
 
 async function _refreshToken() {
@@ -136,10 +151,11 @@ async function _refreshToken() {
   const data = await response.json();
   // USGA returns the token at data.token or nested under data.user.token
   const token = data.token ?? data.user?.token;
+  const userId = data.user?.id ?? data.id ?? null;
   if (!token) throw new Error('USGA login response missing token field');
 
   // Cache for 11.5 hours (token lasts ~12 hours per docs)
-  _tokenCache = { token, expiresAt: Date.now() + 11.5 * 60 * 60 * 1000 };
+  _tokenCache = { token, userId: userId != null ? String(userId) : null, expiresAt: Date.now() + 11.5 * 60 * 60 * 1000 };
   logger.info('USGA bearer token refreshed');
   return token;
   })();
@@ -333,6 +349,57 @@ async function searchCourses(params) {
   const data = await request('GET', '/courses/search.json', query);
   const courses = data.courses ?? [];
   return courses.map(_normalizeCourseSearchResult);
+}
+
+// ============================================================
+// Golfer product access endpoints
+// ============================================================
+
+async function requestGolferProductAccess(ghinNumber, email) {
+  const golferId = String(ghinNumber || '').trim();
+  if (!golferId) {
+    throw new Error('GHIN number is required');
+  }
+  if (!email || !String(email).trim()) {
+    throw new Error('Golfer email is required');
+  }
+
+  return request(
+    'POST',
+    `/users/golfers/${encodeURIComponent(golferId)}/request_golfer_product_access.json`,
+    { email: String(email).trim() }
+  );
+}
+
+async function updateGolferProductAccessStatus(ghinNumber, status) {
+  const golferId = String(ghinNumber || '').trim();
+  const nextStatus = String(status || '').trim().toLowerCase();
+  if (!golferId) {
+    throw new Error('GHIN number is required');
+  }
+  if (!['pending', 'approved', 'inactive'].includes(nextStatus)) {
+    throw new Error('Invalid golfer product access status');
+  }
+
+  const vendorUserId = await getVendorUserId();
+  return request(
+    'POST',
+    `/users/${encodeURIComponent(vendorUserId)}/golfers/${encodeURIComponent(golferId)}/update_golfer_product_access_status.json?gpa_status=${encodeURIComponent(nextStatus)}`,
+    {}
+  );
+}
+
+async function revokeGolferProductAccess(ghinNumber) {
+  const golferId = String(ghinNumber || '').trim();
+  if (!golferId) {
+    throw new Error('GHIN number is required');
+  }
+
+  return request(
+    'DELETE',
+    `/users/golfers/${encodeURIComponent(golferId)}/revoke_golfer_product_access.json`,
+    {}
+  );
 }
 
 // ============================================================
@@ -550,6 +617,9 @@ module.exports = {
   searchGolfers,
   getCourse,
   searchCourses,
+  requestGolferProductAccess,
+  updateGolferProductAccessStatus,
+  revokeGolferProductAccess,
   getWebhookSettings,
   updateWebhookSettings,
   deleteWebhookSettings,

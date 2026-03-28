@@ -1,8 +1,8 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** March 26, 2026  
+**Last Updated:** March 27, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, and additive course-name/schema hardening are validated; the remaining scale gap is replacing stage 1 per-course CacheDB writes with a bulk CacheDB writer
+**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, and full sandbox-accessible catalog projection into golfdb runtime are validated; the approval-track path now moves directly to the standalone staging-readiness checklist, with bulk stage 1 CacheDB writer work deferred as future scaling work
 
 ---
 
@@ -24,7 +24,7 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - **Runtime mirror in golfdb** — `GhinRuntimeCourses`, `GhinRuntimeTees`, `GhinRuntimeHoles` are the locked runtime serving model for GHIN-backed course reads
 - **Bridge table note** — `GhinCourseMapping` exists from earlier design and is retained pending audit before any cleanup/removal
 
-### Current validated progress (Mar 26, 2026)
+### Current validated progress (Updated Mar 27, 2026)
 
 - Cache DB seed and smoke flow validated with real GHIN course `1385` (search -> tees -> holes).
 - Course location normalization was corrected: read `CourseCity` / `CourseState` from GHIN payload and normalize state `US-XX` -> `XX`.
@@ -38,8 +38,10 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - Known explicit source-data blocker remains `14916`: GHIN omits hole `Allocation`, and middleware intentionally fails fast rather than synthesizing invalid data.
 - State-partition discovery/backfill is implemented to enumerate unknown GHIN course IDs before sync.
 - The pipeline is now split cleanly: stage 1 validates and writes canonical GHIN data into CacheDB, and stage 2 bulk-projects CacheDB rows into golfdb runtime tables.
-- Multi-state proving confirmed the stage 2 bulk projector is fast enough; the remaining bottleneck is stage 1 per-course CacheDB write throughput.
-- Remaining major middleware gap is a bulk stage 1 CacheDB writer that preserves per-course validation failures plus checkpoint/resume semantics.
+- Multi-state proving confirmed the stage 2 bulk projector is fast enough.
+- Full sandbox-accessible catalog loading is now proven for the approval track: CacheDB holds the sandbox-accessible course set, the default `all-US` backfill scope was widened to current GHIN US jurisdictions, and bulk projection into an empty golfdb runtime target completed successfully.
+- Sandbox course-discovery limitations are understood and explicitly treated as sandbox behavior limits, not active middleware defects.
+- Bulk stage 1 CacheDB writer work remains a future scaling task, but it is no longer a gate before the standalone staging-readiness checklist path.
 
 ---
 
