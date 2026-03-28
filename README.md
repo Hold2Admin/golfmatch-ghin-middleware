@@ -2,7 +2,7 @@
 
 Middleware service for transforming and securing USGA GHIN/WHS API data for the Fore Play golf pairing application.
 
-Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, and full sandbox-accessible catalog projection into golfdb runtime are complete and validated. Golf Match runtime reads are already cut over to golfdb mirror tables. The approval-track path now proceeds directly through the standalone staging-readiness checklist; further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
+Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, full sandbox-accessible catalog projection into golfdb runtime, and the score-posting plus score-readback boundary are complete and validated. Golf Match runtime reads are already cut over to golfdb mirror tables, and the approval-track path now proceeds directly through the standalone staging-readiness checklist; further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
 
 ## Architecture
 
@@ -84,6 +84,11 @@ src/
 - `POST /courses/search` - Search courses
 - `POST /courses/import` - Import course to Fore Play
 
+### Score Endpoints
+- `POST /scores/post` - Normalized score-post boundary for GHIN submission
+- `GET /scores/search` - Read official golfer scoring-record rows from GHIN
+- `GET /scores/:scoreId` - Read official GHIN detail for a single posted score
+
 ### Admin Endpoints
 - `GET /health` - Health check
 - `POST /sync/courses/:id` - Refresh course data
@@ -141,7 +146,7 @@ Critical secrets stored in Azure Key Vault:
 - **Phase 2** (Validated core flow): Golf Match runtime read-path cutover, state-partition catalog discovery/backfill, and CacheDB -> GolfDB bulk runtime projection
 - **Phase 2 Remaining Work** (Deferred scaling): Replace stage 1 per-course CacheDB writes with a bulk CacheDB writer when national-scale catalog tuning becomes active work again
 - **Phase 3**: Live handicap pulls and player caching
-- **Phase 4+**: Expanded score-posting and operational hardening
+- **Phase 4+**: Expanded verification/reconciliation, golfer-state validation, and operational hardening on top of the now-validated score-posting and score-readback boundary
 
 ## Documentation
 
