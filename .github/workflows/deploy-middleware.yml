@@ -51,7 +51,7 @@ jobs:
       run: |
         set -euo pipefail
         SHORT_SHA="${GITHUB_SHA::7}"
-        PACKAGE_VERSION="$(node -p \"require('./package.json').version\")"
+        PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
         DEPLOYED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         DEPLOYMENT_VERSION="${PACKAGE_VERSION}+${SHORT_SHA}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
         BLOB_NAME="ghin-middleware-${SHORT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
