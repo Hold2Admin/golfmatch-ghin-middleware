@@ -11,10 +11,126 @@ const { transformGhinCourse, transformGhinTee, transformGhinHole } = require('..
 
 const logger = createLogger('courses');
 
+function parseSeasonMonthDay(value) {
+  const match = String(value || '').trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!match) return null;
+
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+
+  return { month, day };
+}
+
+function toMonthDayNumber(parts) {
+  return (parts.month * 100) + parts.day;
+}
+
+function isPlayedAtWithinSeason(playedAt, season) {
+  if (!playedAt || !season || season.isAllYear) {
+    return true;
+  }
+
+  const playedDate = new Date(`${playedAt}T00:00:00Z`);
+  if (Number.isNaN(playedDate.getTime())) {
+    return null;
+  }
+
+  const start = parseSeasonMonthDay(season.seasonStartDate);
+  const end = parseSeasonMonthDay(season.seasonEndDate);
+  if (!start || !end) {
+    return null;
+  }
+
+  const played = toMonthDayNumber({ month: playedDate.getUTCMonth() + 1, day: playedDate.getUTCDate() });
+  const startValue = toMonthDayNumber(start);
+  const endValue = toMonthDayNumber(end);
+
+  if (startValue <= endValue) {
+    return played >= startValue && played <= endValue;
+  }
+
+  return played >= startValue || played <= endValue;
+}
+
+function isFuturePlayedAt(playedAt) {
+  if (!playedAt) return null;
+
+  const playedDate = new Date(`${playedAt}T00:00:00Z`);
+  if (Number.isNaN(playedDate.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  return playedDate.getTime() > todayUtc.getTime();
+}
+
 /**
  * GET /api/v1/courses/:ghinCourseId
  * Fetch complete course data including all tees and holes
  */
+router.get(
+  '/:ghinCourseId/posting-season',
+  [
+    param('ghinCourseId').isString().trim().isLength({ min: 1, max: 100 }).withMessage('Invalid GHIN course ID')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid course ID format',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinCourseId } = req.params;
+    const playedAt = typeof req.query.played_at === 'string' ? req.query.played_at.trim() : null;
+
+    try {
+      const season = await ghinClient.getCoursePostingSeason(ghinCourseId);
+      if (!season) {
+        return res.status(404).json({
+          error: {
+            code: 'GHIN_COURSE_NOT_FOUND',
+            message: `Course with ID ${ghinCourseId} not found`,
+            retryable: false
+          }
+        });
+      }
+
+      return res.json({
+        success: true,
+        courseId: season.courseId,
+        courseName: season.courseName,
+        facilityName: season.facilityName,
+        state: season.state,
+        seasonName: season.seasonName,
+        seasonStartDate: season.seasonStartDate,
+        seasonEndDate: season.seasonEndDate,
+        isAllYear: season.isAllYear,
+        playedAt,
+        isFuturePlayedAt: isFuturePlayedAt(playedAt),
+        isPlayableOnDate: isPlayedAtWithinSeason(playedAt, season)
+      });
+    } catch (error) {
+      logger.error('Error fetching course posting season', { ghinCourseId, error: error.message, playedAt });
+      return res.status(error.status || 502).json({
+        error: {
+          code: error.code || 'GHIN_API_ERROR',
+          message: error.message || 'Failed to fetch course posting season',
+          retryable: (error.status || 500) >= 500
+        }
+      });
+    }
+  }
+);
+
 router.get(
   '/:ghinCourseId',
   [

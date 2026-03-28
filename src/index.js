@@ -80,11 +80,13 @@ app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
 const healthRouter = require('./routes/health');
 const playersRouter = require('./routes/players');
 const coursesRouter = require('./routes/courses');
+const scoresRouter = require('./routes/scores');
 const webhooksRouter = require('./routes/webhooks');
 
 app.use('/api/v1/health', healthRouter);
 app.use('/api/v1/players', playersRouter);
 app.use('/api/v1/courses', coursesRouter);
+app.use('/api/v1/scores', scoresRouter);
 app.use('/api/v1/webhooks', webhooksRouter);
 
 // Root endpoint

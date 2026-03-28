@@ -1,8 +1,8 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** March 27, 2026  
+**Last Updated:** March 28, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, and full sandbox-accessible catalog projection into golfdb runtime are validated; the approval-track path now moves directly to the standalone staging-readiness checklist, with bulk stage 1 CacheDB writer work deferred as future scaling work
+**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, full sandbox-accessible catalog projection into golfdb runtime, and the normalized GHIN score-posting boundary are validated; approval-track work is now centered on staging-readiness follow-through, not more runtime cutover speculation
 
 ---
 
@@ -815,7 +815,7 @@ GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M
 - ✅ Outbound allowlist gate implemented in `usaGhinApiClient` with explicit deny behavior
 - ✅ Phase 1 smoke tests completed end-to-end (player + course paths)
 
-### Phase 1.5 (Pre-Cutover — March 2026)
+### Phase 1.5 (Core Runtime + Sync Foundation — March 2026)
 - ✅ **Two-database architecture designed** — golfdb (app) + golfdb-ghin-cache (production GHIN data)
 - ✅ **Extended cache schema authored** — GHIN_Courses/Tees/Holes with TeeSetSide awareness, F9/B9/18H ratings, 24h TTL
 - ✅ **GhinCourseMapping bridge table designed** — maps GHIN IDs ↔ Golf Match IDs (no cross-DB FK)
@@ -825,16 +825,17 @@ GET /api/v1/courses/GHIN-54321/holes?teeId=GHIN-TEE-1001&gender=M
 - ✅ **Cache DB population validated** — real seeded/reconciled course paths work end-to-end
 - ✅ **Mirror sync automation validated** — callback, webhook lifecycle, and reconciliation safety net are live
 - ✅ **Course naming model hardened** — `FacilityName` + raw `ShortCourseName` + composed runtime `CourseName`
-- ⏳ **Final cutover step pending** — runtime read-path verification first; migration 025 remains deferred until explicit go/no-go
+- ✅ **Runtime read-path cutover validated in Golf Match** — GHIN-backed runtime reads are proven on `GhinRuntimeCourses` / `GhinRuntimeTees` / `GhinRuntimeHoles`
+- ✅ **Score-posting boundary validated** — `/api/v1/scores/post`, `/api/v1/scores/search`, and `/api/v1/scores/:scoreId` are wired through normalized middleware route/service/client layers, and posting-season lookup plus upstream rejection normalization are active
 
 **See the Golf Match implementation record in `c:\dev\golf-match-local-cache\docs\GHIN-INTEGRATION-PLAN.md` for complete migration suite details, execution sequence, and cutover checkpoints.**
 
-### Phase 2 (Next — Runtime Read-Path Cutover + Admin Import UX)
-- 🔄 Verify and complete mirror-first consumption in Golf Match:
-  1. Audit GHIN-backed gameplay/admin reads and remove remaining middleware runtime-read dependencies
-  2. Prove course/tee/hole reads come from `GhinRuntimeCourses` / `GhinRuntimeTees` / `GhinRuntimeHoles`
-  3. Build admin GHIN search/import UX on top of the validated mirror model
-  4. Keep migration 025 deferred until mirror-first reads are stable through the validation window
+### Phase 2 (Current — Staging Readiness Support)
+- 🔄 Keep the middleware boundary stable while Golf Match completes the remaining approval-track gaps:
+  1. Use `/api/v1/scores/post` as the sole public score-post entrypoint and `/api/v1/scores/search` plus `/api/v1/scores/:scoreId` for follow-on diagnostics/readback
+  2. Keep posting-season checks, allowlist enforcement, and explicit upstream error normalization intact; do not add hidden fallbacks
+  3. Support the remaining staging-readiness work that still lives in Golf Match product surfaces: scoring-record UX, golfer-state validation, and evidence capture
+  4. Keep migration 025 deferred until there is an explicit cleanup go/no-go decision
 
 ### Phase 3 (Planned — Player Handicap Sync)
 - 🔄 Implement player handicap caching and refresh:

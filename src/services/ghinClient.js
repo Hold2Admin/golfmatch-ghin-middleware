@@ -1,7 +1,6 @@
 // ============================================================
-// GHIN API Client
-// Phase 1-3: Returns mock data
-// Phase 4+: Replace with real GHIN API calls
+// GHIN client boundary
+// Uses live USGA calls when configured, with mock fallback retained for local testing.
 // ============================================================
 
 const { createLogger } = require('../utils/logger');
@@ -179,6 +178,25 @@ async function getCourse(ghinCourseId) {
   return usaGhinApiClient.getCourse(ghinCourseId);
 }
 
+async function getCoursePostingSeason(ghinCourseId) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Fetching posting season for course ${ghinCourseId}`);
+    return {
+      courseId: String(ghinCourseId),
+      courseName: null,
+      facilityName: null,
+      state: null,
+      seasonName: 'All Year',
+      seasonStartDate: null,
+      seasonEndDate: null,
+      isAllYear: true
+    };
+  }
+
+  logger.info(`[LIVE] Fetching posting season for course ${ghinCourseId} from USGA API source`);
+  return usaGhinApiClient.getCoursePostingSeason(ghinCourseId);
+}
+
 /**
  * Search for courses
  * @param {Object} params - Search parameters
@@ -233,6 +251,54 @@ async function searchCourses(params) {
   return usaGhinApiClient.searchCourses(params);
 }
 
+async function postScore(mode, payload) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Posting ${mode} score to GHIN`, {
+      golferId: payload?.golfer_id,
+      courseId: payload?.course_id,
+      teeSetId: payload?.tee_set_id
+    });
+    return {
+      success: true,
+      score_id: `mock-score-${Date.now()}`,
+      confirmation_required: false,
+      mode,
+      posted_at: new Date().toISOString()
+    };
+  }
+
+  logger.info(`[LIVE] Posting ${mode} score to USGA API`, {
+    golferId: payload?.golfer_id,
+    courseId: payload?.course_id,
+    teeSetId: payload?.tee_set_id
+  });
+  return usaGhinApiClient.postScore(mode, payload);
+}
+
+async function searchScores(filters = {}) {
+  if (config.ghin.useMock) {
+    logger.info('[MOCK] Searching posted scores', filters);
+    return [];
+  }
+
+  logger.info('[LIVE] Searching posted scores via USGA API', filters);
+  return usaGhinApiClient.searchScores(filters);
+}
+
+async function getScore(scoreId) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Fetching posted score ${scoreId}`);
+    return {
+      score_id: String(scoreId),
+      status: 'mock',
+      fetched_at: new Date().toISOString()
+    };
+  }
+
+  logger.info(`[LIVE] Fetching posted score ${scoreId} via USGA API`);
+  return usaGhinApiClient.getScore(scoreId);
+}
+
 module.exports = {
   getPlayer,
   searchPlayers,
@@ -240,5 +306,9 @@ module.exports = {
   updateGolferProductAccessStatus,
   revokeGolferProductAccess,
   getCourse,
-  searchCourses
+  getCoursePostingSeason,
+  searchCourses,
+  postScore,
+  searchScores,
+  getScore
 };

@@ -11,6 +11,40 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('usaGhinApiClient');
 
+function tryParseJson(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function buildUsgaApiError(status, method, path, responseText) {
+  const parsed = tryParseJson(responseText);
+  const playedAtErrors = Array.isArray(parsed?.errors?.played_at) ? parsed.errors.played_at : [];
+  const outOfSeasonMessage = playedAtErrors.find((message) =>
+    String(message || '').toLowerCase().includes('active score posting season')
+  );
+
+  if (outOfSeasonMessage) {
+    return Object.assign(new Error(outOfSeasonMessage), {
+      status,
+      code: 'OUT_OF_POSTING_SEASON',
+      responsePayload: parsed || responseText
+    });
+  }
+
+  return Object.assign(
+    new Error(`USGA API ${status} on ${method} ${path}: ${responseText}`),
+    {
+      status,
+      code: status >= 500 ? 'USGA_API_UPSTREAM_ERROR' : 'USGA_API_REQUEST_REJECTED',
+      responsePayload: parsed || responseText
+    }
+  );
+}
+
 function getRequestTimeoutMs() {
   const timeout = Number(process.env.GHIN_API_TIMEOUT_MS || config.ghin.timeout || 10000);
   return Number.isFinite(timeout) && timeout > 0 ? timeout : 10000;
@@ -62,8 +96,11 @@ const ALLOWLIST = [
   { method: 'GET',  pattern: /^\/golfers\/\d+\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/search\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/\d+\.json$/ },
+  { method: 'POST', pattern: /^\/scores\/hbh\.json$/ },
+  { method: 'POST', pattern: /^\/scores\/adjusted\.json$/ },
   { method: 'POST', pattern: /^\/scores\.json$/ },
   { method: 'GET',  pattern: /^\/scores\/search\.json$/ },
+  { method: 'GET',  pattern: /^\/scores\/[^/]+\.json$/ },
   { method: 'POST', pattern: /^\/users\/golfers\/\d+\/request_golfer_product_access\.json$/ },
   { method: 'POST', pattern: /^\/users\/\d+\/golfers\/\d+\/update_golfer_product_access_status\.json$/ },
   { method: 'DELETE', pattern: /^\/users\/golfers\/\d+\/revoke_golfer_product_access\.json$/ },
@@ -215,7 +252,7 @@ async function request(method, path, params = {}) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`USGA API ${response.status} on ${method} ${path}: ${text}`);
+    throw buildUsgaApiError(response.status, method, path, text);
   }
 
   return response.json();
@@ -273,7 +310,7 @@ async function requestWithBase(method, path, params = {}, baseUrlOverride = null
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`USGA API ${response.status} on ${method} ${path}: ${text}`);
+    throw buildUsgaApiError(response.status, method, path, text);
   }
 
   return response.json();
@@ -324,6 +361,12 @@ async function getCourse(courseId) {
   const data = await request('GET', `/courses/${courseId}.json`);
   if (!data || !data.Facility || !Array.isArray(data.TeeSets)) return null;
   return _normalizeCourse(data, String(courseId));
+}
+
+async function getCoursePostingSeason(courseId) {
+  const data = await request('GET', `/courses/${courseId}.json`);
+  if (!data) return null;
+  return _normalizeCoursePostingSeason(data, String(courseId));
 }
 
 /**
@@ -428,6 +471,42 @@ async function listWebhooks(params = {}) {
   return requestWithBase('GET', '/user/webhooks.json', { page, per_page: perPage }, getWebhookBaseUrl());
 }
 
+async function postScore(mode, payload) {
+  const normalizedMode = String(mode || '').trim().toLowerCase();
+  if (!['hbh', 'adjusted'].includes(normalizedMode)) {
+    throw new Error('Unsupported GHIN score posting mode');
+  }
+
+  const endpoint = normalizedMode === 'adjusted'
+    ? '/scores/adjusted.json'
+    : '/scores/hbh.json';
+
+  return request('POST', endpoint, payload);
+}
+
+async function searchScores(params = {}) {
+  const query = {
+    page: params.page ?? 1,
+    per_page: params.per_page ?? params.perPage ?? 25
+  };
+
+  if (params.golfer_id) query.golfer_id = params.golfer_id;
+  if (params.played_at_from) query.played_at_from = params.played_at_from;
+  if (params.played_at_to) query.played_at_to = params.played_at_to;
+  if (params.mode) query.mode = params.mode;
+
+  return request('GET', '/scores/search.json', query);
+}
+
+async function getScore(scoreId) {
+  const normalizedScoreId = String(scoreId || '').trim();
+  if (!normalizedScoreId) {
+    throw new Error('scoreId is required');
+  }
+
+  return request('GET', `/scores/${encodeURIComponent(normalizedScoreId)}.json`);
+}
+
 // ============================================================
 // Normalization
 // ============================================================
@@ -527,6 +606,24 @@ function _composeCourseDisplayName(facilityName, courseName, fullName = null) {
   return `${facility} - ${course}`;
 }
 
+function _normalizeCoursePostingSeason(data, courseId) {
+  const facility = data.Facility ?? {};
+  const season = data.Season ?? {};
+  const rawCourseName = data.CourseName ?? data.Name ?? facility.CourseName ?? facility.Name ?? null;
+  const facilityName = facility.FacilityName ?? facility.Name ?? data.FacilityName ?? null;
+
+  return {
+    courseId: String(courseId),
+    courseName: _composeCourseDisplayName(facilityName, rawCourseName),
+    facilityName,
+    state: _normalizeState(data.CourseState ?? data.State ?? facility.State),
+    seasonName: season.SeasonName ?? null,
+    seasonStartDate: season.SeasonStartDate ?? null,
+    seasonEndDate: season.SeasonEndDate ?? null,
+    isAllYear: Boolean(season.IsAllYear)
+  };
+}
+
 function _normalizeCourse(data, courseId) {
   const facility = data.Facility ?? {};
   const teeSets = data.TeeSets ?? [];
@@ -616,7 +713,11 @@ module.exports = {
   getGolfer,
   searchGolfers,
   getCourse,
+  getCoursePostingSeason,
   searchCourses,
+  postScore,
+  searchScores,
+  getScore,
   requestGolferProductAccess,
   updateGolferProductAccessStatus,
   revokeGolferProductAccess,
