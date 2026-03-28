@@ -9,6 +9,7 @@ const config = require('../config');
 const { getClient } = require('../utils/appinsights');
 const database = require('../services/database');
 const redis = require('../services/redis');
+const { getRuntimeInfo } = require('../utils/runtimeInfo');
 
 const logger = createLogger('health');
 
@@ -64,6 +65,7 @@ router.get('/', async (req, res) => {
     });
 
     const allHealthy = checks.every((c) => c.status === 'healthy');
+    const runtimeInfo = getRuntimeInfo();
 
     const payload = {
       status: allHealthy ? 'healthy' : 'degraded',
@@ -71,7 +73,8 @@ router.get('/', async (req, res) => {
       uptime: process.uptime(),
       environment: config.env,
       ghinApiMode: config.ghin.useMock ? 'MOCK' : 'LIVE',
-      version: '1.0.0',
+      version: runtimeInfo.appVersion,
+      deployment: runtimeInfo,
       checks
     };
 

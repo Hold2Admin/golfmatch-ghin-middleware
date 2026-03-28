@@ -73,6 +73,7 @@ const database = safeRequire('./services/database');
 const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
+const { getRuntimeInfo } = safeRequire('./utils/runtimeInfo');
 
 async function initializeSecrets() {
   if (process.env.NODE_ENV === 'test') {
@@ -148,9 +149,11 @@ app.use('/api/v1/webhooks', webhooksRouter);
 
 // Root endpoint
 app.get('/', (req, res) => {
+  const runtimeInfo = getRuntimeInfo();
   res.json({
     service: 'GHIN Middleware API',
-    version: '1.0.0',
+    version: runtimeInfo.appVersion,
+    deployment: runtimeInfo,
     status: 'running',
     documentation: '/api/v1/health'
   });
@@ -218,6 +221,7 @@ async function bootstrap() {
     const ghinMode = config.ghin.useMock ? 'MOCK' : 'LIVE';
     const dbConfigured = Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME);
     const reconciliationScheduler = startReconciliationScheduler();
+    const runtimeInfo = getRuntimeInfo();
 
     logger.info('Startup summary', {
       port: PORT,
@@ -227,7 +231,8 @@ async function bootstrap() {
       redisConfigured: Boolean(config.redis.host),
       secretsLoaded: secretStatus.loaded,
       secretsSource: secretStatus.source,
-      reconciliationScheduler
+      reconciliationScheduler,
+      deployment: runtimeInfo
     });
     logger.info(`GHIN Middleware API listening on port ${PORT}`);
     logger.info('✅ Startup complete - middleware is ready to accept requests');
@@ -237,7 +242,9 @@ async function bootstrap() {
       environment: config.env,
       ghinMode,
       dbConfigured: String(dbConfigured),
-      secretsLoaded: String(secretStatus.loaded)
+      secretsLoaded: String(secretStatus.loaded),
+      deploymentVersion: runtimeInfo.deploymentVersion,
+      commitSha: runtimeInfo.commitSha || ''
     });
   });
 }

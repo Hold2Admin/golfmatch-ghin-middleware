@@ -119,6 +119,8 @@ npm test -- --coverage
 
 Deployed via GitHub Actions to Azure App Service.
 
+Pushes to `main` deploy automatically with a unique package blob and deployment version. The running deployment identity is exposed at `/api/v1/health` and `/` so you can verify which package actually booted.
+
 See `.github/workflows/deploy-middleware.yml` for CI/CD pipeline.
 
 ## Environment Variables

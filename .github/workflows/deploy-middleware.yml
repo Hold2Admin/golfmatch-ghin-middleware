@@ -21,6 +21,10 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: deploy-ghin-middleware-main
+  cancel-in-progress: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -41,6 +45,22 @@ jobs:
 
     - name: Run tests
       run: npm test --if-present
+
+    - name: Set deployment metadata
+      shell: bash
+      run: |
+        set -euo pipefail
+        SHORT_SHA="${GITHUB_SHA::7}"
+        PACKAGE_VERSION="$(node -p \"require('./package.json').version\")"
+        DEPLOYED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        DEPLOYMENT_VERSION="${PACKAGE_VERSION}+${SHORT_SHA}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+        BLOB_NAME="ghin-middleware-${SHORT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+
+        echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+        echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
+        echo "DEPLOYED_AT_UTC=$DEPLOYED_AT_UTC" >> "$GITHUB_ENV"
+        echo "DEPLOYMENT_VERSION=$DEPLOYMENT_VERSION" >> "$GITHUB_ENV"
+        echo "BLOB_NAME=$BLOB_NAME" >> "$GITHUB_ENV"
 
     - name: Create deployment package with production dependencies
       shell: bash
@@ -85,8 +105,6 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        BLOB_NAME="ghin-middleware-$(date -u +%Y%m%d%H%M%S).zip"
-        echo "BLOB_NAME=$BLOB_NAME" >> "$GITHUB_ENV"
         az storage blob upload \
           --account-name golfmatchstorage \
           --container-name deployments \
@@ -103,7 +121,14 @@ jobs:
         az webapp config appsettings set \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-          --settings WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
+          --settings \
+            WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
+            APP_DEPLOYMENT_VERSION="$DEPLOYMENT_VERSION" \
+            APP_DEPLOYMENT_SHA="$GITHUB_SHA" \
+            APP_DEPLOYMENT_RUN_ID="$GITHUB_RUN_ID" \
+            APP_DEPLOYMENT_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            APP_DEPLOYED_AT_UTC="$DEPLOYED_AT_UTC" \
+            APP_PACKAGE_BLOB_NAME="$BLOB_NAME" \
           --output none
 
     - name: Restart app after package update
@@ -113,6 +138,18 @@ jobs:
         az webapp restart \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+
+    - name: Summarize deployment metadata
+      shell: bash
+      run: |
+        {
+          echo "### Middleware deployment"
+          echo ""
+          echo "- Deployment version: $DEPLOYMENT_VERSION"
+          echo "- Commit SHA: $GITHUB_SHA"
+          echo "- Package blob: $BLOB_NAME"
+          echo "- Deployed at (UTC): $DEPLOYED_AT_UTC"
+        } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Test deployment (retry until healthy)
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_health_check == true }}
@@ -124,11 +161,12 @@ jobs:
         attempts=30
         delay=10
         for i in $(seq 1 $attempts); do
-          if curl -fsSL "$APP_URL" | tee health.json | grep -q '"status":"healthy"'; then
+          http_status=$(curl -sS -o health.json -w '%{http_code}' "$APP_URL" || true)
+          if [ "$http_status" = "200" ] && jq -e --arg expected "$DEPLOYMENT_VERSION" '.status == "healthy" and .deployment.deploymentVersion == $expected' health.json > /dev/null; then
             echo "Health check passed on attempt $i"
             exit 0
           fi
-          echo "Attempt $i failed; waiting $delay seconds..."
+          echo "Attempt $i failed; status=$http_status; waiting $delay seconds..."
           sleep $delay
         done
         echo "Health check did not pass after $attempts attempts"
