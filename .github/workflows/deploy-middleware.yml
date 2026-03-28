@@ -106,6 +106,14 @@ jobs:
           --settings WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
           --output none
 
+    - name: Restart app after package update
+      shell: bash
+      run: |
+        set -euo pipefail
+        az webapp restart \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+
     - name: Test deployment (retry until healthy)
       if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_health_check == true }}
       shell: bash
