@@ -2,20 +2,77 @@
 // GHIN Middleware API - Entry Point
 // ============================================================
 
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const { createLogger } = require('./utils/logger');
-const { initializeAppInsights, trackEvent } = require('./utils/appinsights');
-const config = require('./config');
-const { conditionalAuth } = require('./middleware/auth');
-const { validateRequest, sanitizeHeaders } = require('./middleware/validation');
-const { addCorrelationId, trackRequestMetrics } = require('./middleware/tracking');
-const { rateLimiter } = require('./middleware/rate-limit');
-const database = require('./services/database');
-const redis = require('./services/redis');
-const { loadSecrets } = require('./config/secrets');
-const { startReconciliationScheduler } = require('./services/reconciliationScheduler');
+const fs = require('fs');
+const path = require('path');
+
+function safeStat(targetPath) {
+  try {
+    const stats = fs.statSync(targetPath);
+    return {
+      exists: true,
+      isDirectory: stats.isDirectory(),
+      size: stats.size
+    };
+  } catch {
+    return { exists: false };
+  }
+}
+
+function listEntries(targetPath, limit = 20) {
+  try {
+    return fs.readdirSync(targetPath).slice(0, limit);
+  } catch (error) {
+    return [`<unavailable: ${error.message}>`];
+  }
+}
+
+function logStartupRequireFailure(moduleName, error) {
+  const appRoot = path.resolve(__dirname, '..');
+  const nodeModulesPath = path.join(appRoot, 'node_modules');
+  const expressPackagePath = path.join(nodeModulesPath, 'express', 'package.json');
+  const diagnostics = {
+    moduleName,
+    errorMessage: error.message,
+    errorCode: error.code,
+    nodeVersion: process.version,
+    cwd: process.cwd(),
+    dirname: __dirname,
+    appRoot,
+    entrypoint: __filename,
+    packageJson: safeStat(path.join(appRoot, 'package.json')),
+    nodeModules: safeStat(nodeModulesPath),
+    expressPackage: safeStat(expressPackagePath),
+    resolvePaths: typeof require.resolve.paths === 'function' ? require.resolve.paths(moduleName) : null,
+    appRootEntries: listEntries(appRoot),
+    srcEntries: listEntries(__dirname)
+  };
+
+  console.error('[startup] module resolution failure', JSON.stringify(diagnostics, null, 2));
+}
+
+function safeRequire(moduleName) {
+  try {
+    return require(moduleName);
+  } catch (error) {
+    logStartupRequireFailure(moduleName, error);
+    throw error;
+  }
+}
+
+const express = safeRequire('express');
+const cors = safeRequire('cors');
+const helmet = safeRequire('helmet');
+const { createLogger } = safeRequire('./utils/logger');
+const { initializeAppInsights, trackEvent } = safeRequire('./utils/appinsights');
+const config = safeRequire('./config');
+const { conditionalAuth } = safeRequire('./middleware/auth');
+const { validateRequest, sanitizeHeaders } = safeRequire('./middleware/validation');
+const { addCorrelationId, trackRequestMetrics } = safeRequire('./middleware/tracking');
+const { rateLimiter } = safeRequire('./middleware/rate-limit');
+const database = safeRequire('./services/database');
+const redis = safeRequire('./services/redis');
+const { loadSecrets } = safeRequire('./config/secrets');
+const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
 
 async function initializeSecrets() {
   if (process.env.NODE_ENV === 'test') {

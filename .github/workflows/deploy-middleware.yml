@@ -42,19 +42,37 @@ jobs:
     - name: Run tests
       run: npm test --if-present
 
-    - name: Create deployment package
+    - name: Create deployment package with production dependencies
       shell: bash
       run: |
         set -euo pipefail
-        echo "Creating deploy.zip (Azure will run npm install)"
+        echo "Creating deploy.zip with production dependencies for Run From Package"
         rm -f deploy.zip
-        zip -r deploy.zip \
-          src \
-          package.json \
-          package-lock.json \
-          README.md \
-          GETTING-STARTED.md \
-          -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**" "node_modules/**"
+        rm -rf deploy-package
+        mkdir -p deploy-package
+
+        cp -R src deploy-package/src
+        cp package.json deploy-package/package.json
+        cp package-lock.json deploy-package/package-lock.json
+        cp README.md deploy-package/README.md
+        if [ -f GETTING-STARTED.md ]; then
+          cp GETTING-STARTED.md deploy-package/GETTING-STARTED.md
+        fi
+
+        pushd deploy-package
+        npm ci --omit=dev
+        zip -r ../deploy.zip . \
+          -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**"
+        popd
+
+    - name: Verify deployment package contents
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Inspecting deploy.zip contents"
+        unzip -l deploy.zip | grep "node_modules/express/package.json"
+        unzip -l deploy.zip | grep "src/index.js"
+        du -h deploy.zip
 
     - name: Login to Azure (OIDC)
       uses: azure/login@v1
