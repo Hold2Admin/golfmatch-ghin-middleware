@@ -5,6 +5,30 @@
 const fs = require('fs');
 const path = require('path');
 
+const startupClock = {
+  processStartMs: Date.now(),
+  processStartIso: new Date().toISOString()
+};
+
+function getStartupElapsedMs() {
+  return Date.now() - startupClock.processStartMs;
+}
+
+function logStartupPhase(phase, details = {}) {
+  console.log('[startup-phase]', JSON.stringify({
+    phase,
+    at: new Date().toISOString(),
+    elapsedMs: getStartupElapsedMs(),
+    ...details
+  }));
+}
+
+logStartupPhase('node-entry', {
+  processStartIso: startupClock.processStartIso,
+  pid: process.pid,
+  nodeVersion: process.version
+});
+
 function safeStat(targetPath) {
   try {
     const stats = fs.statSync(targetPath);
@@ -192,36 +216,91 @@ async function bootstrap() {
     return;
   }
 
+  logStartupPhase('bootstrap-start', {
+    environment: config.env,
+    port: PORT
+  });
+
+  const secretsLoadStartedMs = Date.now();
+  logStartupPhase('secrets-load-start');
+
   const secretStatus = await initializeSecrets();
+  logStartupPhase('secrets-load-complete', {
+    durationMs: Date.now() - secretsLoadStartedMs,
+    loaded: secretStatus.loaded,
+    source: secretStatus.source,
+    usedWarningFallback: Boolean(secretStatus.warning)
+  });
+
   if (secretStatus.warning) {
     logger.warn('Secrets loader fallback in use', { warning: secretStatus.warning });
   }
 
   // Initialize Application Insights after secrets are loaded/fallback is known.
+  const appInsightsStartedMs = Date.now();
   initializeAppInsights();
+  logStartupPhase('appinsights-init-complete', {
+    durationMs: Date.now() - appInsightsStartedMs
+  });
 
   // Lazy-initialize optional services in background (do not block readiness).
   setImmediate(async () => {
+    logStartupPhase('background-service-init-start', {
+      databaseConfigured: Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME),
+      redisConfigured: Boolean(config.redis.host)
+    });
+
+    const dbConnectStartedMs = Date.now();
     try {
       await database.connect();
+      logStartupPhase('background-database-connect-complete', {
+        durationMs: Date.now() - dbConnectStartedMs
+      });
     } catch (error) {
+      logStartupPhase('background-database-connect-failed', {
+        durationMs: Date.now() - dbConnectStartedMs,
+        error: error.message
+      });
       logger.warn('Database background connect failed', { error: error.message });
     }
 
     if (config.redis.host) {
+      const redisConnectStartedMs = Date.now();
       try {
         await redis.connect();
+        logStartupPhase('background-redis-connect-complete', {
+          durationMs: Date.now() - redisConnectStartedMs
+        });
       } catch (error) {
+        logStartupPhase('background-redis-connect-failed', {
+          durationMs: Date.now() - redisConnectStartedMs,
+          error: error.message
+        });
         logger.warn('Redis background connect failed', { error: error.message });
       }
+    } else {
+      logStartupPhase('background-redis-skip', {
+        reason: 'not-configured'
+      });
     }
   });
+
+  const listenBindStartedMs = Date.now();
+  logStartupPhase('listen-bind-start', { port: PORT });
 
   app.listen(PORT, () => {
     const ghinMode = config.ghin.useMock ? 'MOCK' : 'LIVE';
     const dbConfigured = Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME);
+    const schedulerStartedMs = Date.now();
     const reconciliationScheduler = startReconciliationScheduler();
     const runtimeInfo = getRuntimeInfo();
+
+    logStartupPhase('listen-ready', {
+      port: PORT,
+      bindDurationMs: Date.now() - listenBindStartedMs,
+      schedulerInitDurationMs: Date.now() - schedulerStartedMs,
+      uptimeSeconds: Number(process.uptime().toFixed(3))
+    });
 
     logger.info('Startup summary', {
       port: PORT,

@@ -12,6 +12,18 @@ const keyVaultUrl = `https://${keyVaultName}.vault.azure.net`;
 
 let secretsCache;
 
+function logSecretPhase(phase, details = {}) {
+  console.log('[startup-secrets]', JSON.stringify({
+    phase,
+    at: new Date().toISOString(),
+    ...details
+  }));
+}
+
+function countLoadedValues(values) {
+  return values.filter((value) => value && String(value).trim()).length;
+}
+
 async function getFirstSecret(client, names) {
   for (const name of names) {
     try {
@@ -34,10 +46,13 @@ async function loadSecrets() {
 
   // Try Key Vault first (works with managed identity in Azure and locally with Azure CLI)
   console.log('🔐 Attempting Key Vault via managed identity');
+  const secretsLoadStartedMs = Date.now();
+  logSecretPhase('keyvault-load-start', { keyVaultName });
   const credential = new DefaultAzureCredential();
   const client = new SecretClient(keyVaultUrl, credential);
 
   try {
+    const coreBatchStartedMs = Date.now();
     const secretsPromise = Promise.all([
       client.getSecret('applicationinsights-connection-string').catch(() => null),
       client.getSecret('GHIN-SANDBOX-EMAIL').catch(() => null),
@@ -59,6 +74,25 @@ async function loadSecrets() {
     const [appInsights, ghinEmail, ghinPassword, ghinBaseUrl, middlewareApiKey, apiKeySecret, sqlUser, sqlPassword, sqlServer, sqlDatabase, redisPassword] = 
       await Promise.race([secretsPromise, timeoutPromise]);
 
+    logSecretPhase('keyvault-core-secrets-complete', {
+      durationMs: Date.now() - coreBatchStartedMs,
+      requestedCount: 11,
+      loadedCount: countLoadedValues([
+        appInsights?.value,
+        ghinEmail?.value,
+        ghinPassword?.value,
+        ghinBaseUrl?.value,
+        middlewareApiKey?.value,
+        apiKeySecret?.value,
+        sqlUser?.value,
+        sqlPassword?.value,
+        sqlServer?.value,
+        sqlDatabase?.value,
+        redisPassword?.value
+      ])
+    });
+
+    const cacheBatchStartedMs = Date.now();
     const [cacheDbServer, cacheDbName, cacheDbUser, cacheDbPassword, ghinMiddlewareSecret] = await Promise.all([
       getFirstSecret(client, ['GHIN-CACHE-DB-SERVER', 'GHIN_CACHE_DB_SERVER']),
       getFirstSecret(client, ['GHIN-CACHE-DB-NAME', 'GHIN_CACHE_DB_NAME']),
@@ -67,12 +101,36 @@ async function loadSecrets() {
       client.getSecret('GHIN-MIDDLEWARE-SECRET').then((s) => s?.value?.trim() || null).catch(() => null)
     ]);
 
+    logSecretPhase('keyvault-cache-secrets-complete', {
+      durationMs: Date.now() - cacheBatchStartedMs,
+      requestedCount: 5,
+      loadedCount: countLoadedValues([
+        cacheDbServer,
+        cacheDbName,
+        cacheDbUser,
+        cacheDbPassword,
+        ghinMiddlewareSecret
+      ])
+    });
+
+    const webhookBatchStartedMs = Date.now();
     const [courseWebhookUrl, courseWebhookToken, webhookBaseUrl, importCallbackUrl] = await Promise.all([
       getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-URL', 'GHIN_COURSE_WEBHOOK_URL']),
       getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-TOKEN', 'GHIN_COURSE_WEBHOOK_TOKEN']),
       getFirstSecret(client, ['GHIN-WEBHOOK-BASE-URL', 'GHIN_WEBHOOK_BASE_URL']),
       getFirstSecret(client, ['GHIN-IMPORT-CALLBACK-URL', 'GHIN_IMPORT_CALLBACK_URL'])
     ]);
+
+    logSecretPhase('keyvault-webhook-secrets-complete', {
+      durationMs: Date.now() - webhookBatchStartedMs,
+      requestedCount: 4,
+      loadedCount: countLoadedValues([
+        courseWebhookUrl,
+        courseWebhookToken,
+        webhookBaseUrl,
+        importCallbackUrl
+      ])
+    });
 
     secretsCache = {
       APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights?.value,
@@ -98,9 +156,16 @@ async function loadSecrets() {
     };
 
     console.log('✅ Secrets loaded from Key Vault');
+    logSecretPhase('keyvault-load-complete', {
+      durationMs: Date.now() - secretsLoadStartedMs
+    });
     return secretsCache;
 
   } catch (kvError) {
+    logSecretPhase('keyvault-load-failed', {
+      durationMs: Date.now() - secretsLoadStartedMs,
+      error: kvError.message
+    });
     throw new Error(`Key Vault unavailable — cannot start without secrets: ${kvError.message}`);
   }
 }
