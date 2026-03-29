@@ -104,6 +104,21 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+    - name: Validate App Service deploy mode
+      shell: bash
+      run: |
+        set -euo pipefail
+        remote_build=$(az webapp config appsettings list \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT'] | [0].value" \
+          --output tsv)
+
+        if [ "$remote_build" = "true" ]; then
+          echo "SCM_DO_BUILD_DURING_DEPLOYMENT must be false for prebuilt zipdeploy artifacts"
+          exit 1
+        fi
+
     - name: Resolve private Kudu publish credentials
       shell: bash
       run: |
@@ -164,8 +179,9 @@ jobs:
           status=$(echo "$response" | jq -r '.status // empty')
           complete=$(echo "$response" | jq -r '.complete // empty')
           active=$(echo "$response" | jq -r '.active // empty')
+          progress=$(echo "$response" | jq -r '.progress // empty')
 
-          echo "ZipDeploy status attempt $attempt: status=${status:-unknown} complete=${complete:-unknown} active=${active:-unknown}"
+          echo "ZipDeploy status attempt $attempt: status=${status:-unknown} complete=${complete:-unknown} active=${active:-unknown} progress=${progress:-unknown}"
 
           if [ "$complete" = "true" ] && [ "$status" = "4" ]; then
             exit 0
@@ -199,33 +215,31 @@ jobs:
             APP_DEPLOYED_AT_UTC='${{ needs.build-test-package.outputs.deployed_at_utc }}' \
           --output none
 
-    - name: Restart app after deployment switch
-      shell: bash
-      run: |
-        set -euo pipefail
-        az webapp restart \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
-
     - name: Verify private health endpoint
       shell: bash
       run: |
         set -euo pipefail
         app_url='https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/v1/health'
         expected='${{ needs.build-test-package.outputs.deployment_version }}'
+        body_file=$(mktemp)
 
         for i in $(seq 1 30); do
-          http_status=$(curl -sS -o health.json -w '%{http_code}' "$app_url" || true)
-          if [ "$http_status" = "200" ] && jq -e --arg expected "$expected" '.status == "healthy" and .deployment.deploymentVersion == $expected' health.json > /dev/null; then
+          rm -f "$body_file"
+          http_status=$(curl -sS -o "$body_file" -w '%{http_code}' --max-time 30 "$app_url" || true)
+          observed_status=$(jq -r '.status // "unknown"' "$body_file" 2>/dev/null || echo invalid)
+          observed_version=$(jq -r '.deployment.deploymentVersion // "unknown"' "$body_file" 2>/dev/null || echo invalid)
+
+          if [ "$http_status" = "200" ] && jq -e --arg expected "$expected" '.status == "healthy" and .deployment.deploymentVersion == $expected' "$body_file" > /dev/null; then
             echo "Private health check passed on attempt $i"
             exit 0
           fi
-          echo "Attempt $i failed; status=$http_status"
+
+          echo "Attempt $i pending; http_status=$http_status app_status=$observed_status deployment_version=$observed_version expected=$expected"
           sleep 10
         done
 
         echo 'Private health check failed'
-        cat health.json || true
+        cat "$body_file" || true
         exit 1
 
     - name: Summarize deployment
