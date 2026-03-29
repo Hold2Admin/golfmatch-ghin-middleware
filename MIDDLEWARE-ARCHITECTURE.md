@@ -994,15 +994,17 @@ This is the historical issue that broke schema exports until credentials were ro
 
 **Operational rule:** Treat SQL password rotation and Key Vault secret updates as one atomic change window. Do not rotate one without the other.
 
-### CI/CD: Run From Package
+### CI/CD: Private Native Deploy
 
-The App Service SCM endpoint (`Kudu-Deny-All` at priority 1) is intentionally blocked to all public traffic as part of the VNet security posture. All Kudu-based deployment methods (`azure/webapps-deploy`, `az webapp deploy`) are permanently disabled by design.
+The middleware deployment path now uses a private native App Service deploy from a self-hosted GitHub runner inside the Golf Match VNet. Public SCM exposure remains blocked; deployment is executed over the private SCM path from inside the network boundary.
 
 **Deployment flow:**
-1. GitHub Actions builds the app and creates a zip package
-2. Uploads zip to `golfmatchstorage/deployments/` blob container via OIDC auth
-3. Sets `WEBSITE_RUN_FROM_PACKAGE` app setting (plain blob URL, no SAS) via ARM
-4. App Service system-assigned managed identity fetches zip directly from blob at startup — no Kudu involved
+1. GitHub Actions builds and tests on a GitHub-hosted runner
+2. The build job creates `deploy.zip` with production dependencies and uploads it as a workflow artifact
+3. The self-hosted runner on `diag-vm-sql-pe` downloads the artifact
+4. The deploy job signs in with OIDC and stamps deployment identity metadata into App Service settings
+5. `az webapp deploy` pushes the package over the private SCM path
+6. The runner verifies `/api/v1/health` privately against the expected deployment version
 
 **Auth: OIDC (no secrets)**
 - Service principal: `golfmatch-github-actions` (appId `4ac504e2-9f9d-4084-953c-047ce32ddea1`)
@@ -1011,9 +1013,74 @@ The App Service SCM endpoint (`Kudu-Deny-All` at priority 1) is intentionally bl
 - **Not used:** `AZURE_WEBAPP_PUBLISH_PROFILE` (deleted)
 
 **Role assignments:**
-- `golfmatch-github-actions` SP → Storage Blob Data Contributor on `golfmatchstorage` (upload)
-- `golfmatch-github-actions` SP → Contributor on `RG_GolfMatch` (set app settings via ARM)
-- App Service system-assigned managed identity (`8844f213-...`) → Storage Blob Data Reader on `golfmatchstorage` (fetch zip at startup)
+- `golfmatch-github-actions` SP → Contributor on `RG_GolfMatch` (deploy and set app settings via ARM)
+- Legacy Run From Package storage roles can be removed after confirming no rollback path still depends on blob-backed deploys
+
+### Deployment Architecture (Authoritative Current State)
+
+The private native App Service deploy flow above is now the active deployment model for this middleware service.
+
+**Current model:**
+1. Build and test on GitHub-hosted runners.
+2. Deploy from a **self-hosted GitHub runner inside the Golf Match VNet**.
+3. Use a **native App Service deployment primitive** (`az webapp deploy` or `azure/webapps-deploy`) over **private SCM/Kudu access**.
+4. Keep **OIDC/federated auth**; do not reintroduce publish profiles.
+5. Preserve deployment identity markers in startup logs and `/api/v1/health` for verification.
+
+**Why this is the preferred model:**
+- **Secure:** middleware remains private; deployment traffic stays on private network paths.
+- **Repeatable:** artifact handoff and App Service cutover use the same native deployment path as the main Golf Match API class of deployment.
+- **Reliable:** avoids remote blob package indirection where artifact publication, runtime pickup, and process cutover are decoupled.
+- **Operationally clean:** supports private health verification and, if the plan tier allows, deployment slots with staged validation and swap.
+
+**Target workflow shape:**
+1. `build-test-package` job on GitHub-hosted runner
+2. artifact publish to GitHub Actions artifacts
+3. `deploy-private` job on self-hosted VNet runner
+4. native App Service deploy to middleware app (or staging slot)
+5. private `/api/v1/health` verification using deployment version markers
+6. optional slot swap for production cutover
+
+**Required prerequisites:**
+- Self-hosted GitHub runner registered for the middleware repo and placed inside the Golf Match VNet (or a trusted peered subnet).
+- Private SCM/Kudu reachability for the middleware App Service.
+- Private DNS resolution for App Service private endpoints from the runner subnet.
+- Least-privilege RBAC for the OIDC principal scoped to middleware deployment targets.
+
+**Decision:** Middleware-api now deploys through the private native App Service path; blob-backed Run From Package is retired as the primary workflow.
+
+### Verified Current-State Facts For Middleware Deployment (Mar 28, 2026)
+
+These facts were re-checked directly before freezing the deployment recommendation.
+
+1. **App Service plan:** `ASP-RGGolfMatch-b012`
+2. **Plan tier:** `Basic B1`
+3. **Deployment slots:** none currently configured
+4. **Slot implication:** slot-based staging/swap is **not available on the current tier** and should be treated as a later enhancement after upgrading the plan tier
+5. **Middleware private endpoint:** `pe-ghin-middleware`
+6. **Middleware private endpoint subnet:** `vnet-golfmatch/subnet-appservice-pe`
+7. **Middleware private endpoint subresource currently configured:** `sites`
+8. **Private DNS zone group:** `default` is attached to `privatelink.azurewebsites.net` on `pe-ghin-middleware`
+9. **Private DNS records now present:** both `golfmatch-ghin-middleware` and `golfmatch-ghin-middleware.scm` resolve to the middleware private endpoint IP in `privatelink.azurewebsites.net`
+10. **Private SCM reachability is now proven from inside the VNet:** `diag-vm-sql-pe` resolves `golfmatch-ghin-middleware.scm.azurewebsites.net` privately and receives the expected `401 Basic realm="site"` challenge from the SCM endpoint
+11. **Self-hosted runner registration is complete:** `diag-vm-sql-pe` is registered to `Hold2Admin/golfmatch-ghin-middleware` with label `middleware-vnet`
+12. **Runner tooling is installed:** Azure CLI and `jq` are present on `diag-vm-sql-pe` for the private deploy workflow
+
+### Implementation Sequence (Production-Safe)
+
+1. Push to `main` to trigger the hosted build plus private deploy sequence.
+2. Use `workflow_dispatch` on the same workflow when you need a manual redeploy without a new commit.
+3. Verify private `/api/v1/health` plus deployment identity markers after each deployment.
+4. After the middleware deploy path is stable, upgrade to a slot-capable tier and add `staging -> health verify -> swap` as phase 2.
+
+### Near-Term Deployment Standard
+
+Until the App Service plan is upgraded beyond `Basic B1`, the recommended middleware deployment standard is:
+
+1. build/test/package on GitHub-hosted runner
+2. deploy from self-hosted VNet runner using native App Service deploy
+3. verify private `/api/v1/health` and deployment identity markers
+4. rollback by redeploying the prior known-good artifact
 
 ---
 

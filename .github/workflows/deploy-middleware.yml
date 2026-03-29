@@ -5,12 +5,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      run_health_check:
-        description: 'Run post-deploy health check (may be blocked by IP restrictions)'
-        required: false
-        default: false
-        type: boolean
 
 env:
   AZURE_WEBAPP_NAME: golfmatch-ghin-middleware
@@ -26,19 +20,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  build-test-package:
     runs-on: ubuntu-latest
+    outputs:
+      deployment_version: ${{ steps.meta.outputs.deployment_version }}
+      deployed_at_utc: ${{ steps.meta.outputs.deployed_at_utc }}
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
-        cache-dependency-path: 'package-lock.json'
+        cache: npm
+        cache-dependency-path: package-lock.json
 
     - name: Install dependencies
       run: npm ci
@@ -47,26 +44,22 @@ jobs:
       run: npm test --if-present
 
     - name: Set deployment metadata
+      id: meta
       shell: bash
       run: |
         set -euo pipefail
-        SHORT_SHA="${GITHUB_SHA::7}"
-        PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
-        DEPLOYED_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        DEPLOYMENT_VERSION="${PACKAGE_VERSION}+${SHORT_SHA}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-        BLOB_NAME="ghin-middleware-${SHORT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+        short_sha="${GITHUB_SHA::7}"
+        package_version="$(node -p 'require("./package.json").version')"
+        deployed_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        deployment_version="${package_version}+${short_sha}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
 
-        echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
-        echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
-        echo "DEPLOYED_AT_UTC=$DEPLOYED_AT_UTC" >> "$GITHUB_ENV"
-        echo "DEPLOYMENT_VERSION=$DEPLOYMENT_VERSION" >> "$GITHUB_ENV"
-        echo "BLOB_NAME=$BLOB_NAME" >> "$GITHUB_ENV"
+        echo "deployment_version=$deployment_version" >> "$GITHUB_OUTPUT"
+        echo "deployed_at_utc=$deployed_at_utc" >> "$GITHUB_OUTPUT"
 
-    - name: Create deployment package with production dependencies
+    - name: Create deployment package
       shell: bash
       run: |
         set -euo pipefail
-        echo "Creating deploy.zip with production dependencies for Run From Package"
         rm -f deploy.zip
         rm -rf deploy-package
         mkdir -p deploy-package
@@ -75,9 +68,6 @@ jobs:
         cp package.json deploy-package/package.json
         cp package-lock.json deploy-package/package-lock.json
         cp README.md deploy-package/README.md
-        if [ -f GETTING-STARTED.md ]; then
-          cp GETTING-STARTED.md deploy-package/GETTING-STARTED.md
-        fi
 
         pushd deploy-package
         npm ci --omit=dev
@@ -85,96 +75,97 @@ jobs:
           -x "wwwroot/**" "logs/**" "logs_temp/**" "logs_temp2/**" "coverage/**" "dist/**" "build/**"
         popd
 
-    - name: Verify deployment package contents
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "Inspecting deploy.zip contents"
-        unzip -l deploy.zip | grep "node_modules/express/package.json"
-        unzip -l deploy.zip | grep "src/index.js"
-        du -h deploy.zip
+    - name: Upload deployment artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: middleware-deploy-package
+        path: deploy.zip
+        retention-days: 7
+
+  deploy-private:
+    needs: build-test-package
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - middleware-vnet
+
+    steps:
+    - name: Download deployment artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: middleware-deploy-package
+        path: downloaded-artifact
 
     - name: Login to Azure (OIDC)
-      uses: azure/login@v1
+      uses: azure/login@v2
       with:
         client-id: ${{ secrets.AZURE_CLIENT_ID }}
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: Upload package to blob storage
+    - name: Stamp deployment metadata app settings
       shell: bash
       run: |
         set -euo pipefail
-        az storage blob upload \
-          --account-name golfmatchstorage \
-          --container-name deployments \
-          --name "$BLOB_NAME" \
-          --file deploy.zip \
-          --auth-mode login \
-          --overwrite
-
-    - name: Deploy via Run From Package
-      shell: bash
-      run: |
-        set -euo pipefail
-        BLOB_URL="https://golfmatchstorage.blob.core.windows.net/deployments/${BLOB_NAME}"
         az webapp config appsettings set \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
           --settings \
-            WEBSITE_RUN_FROM_PACKAGE="$BLOB_URL" \
-            APP_DEPLOYMENT_VERSION="$DEPLOYMENT_VERSION" \
-            APP_DEPLOYMENT_SHA="$GITHUB_SHA" \
-            APP_DEPLOYMENT_RUN_ID="$GITHUB_RUN_ID" \
-            APP_DEPLOYMENT_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
-            APP_DEPLOYED_AT_UTC="$DEPLOYED_AT_UTC" \
-            APP_PACKAGE_BLOB_NAME="$BLOB_NAME" \
+            APP_DEPLOYMENT_VERSION='${{ needs.build-test-package.outputs.deployment_version }}' \
+            APP_DEPLOYMENT_SHA='${{ github.sha }}' \
+            APP_DEPLOYMENT_RUN_ID='${{ github.run_id }}' \
+            APP_DEPLOYMENT_RUN_ATTEMPT='${{ github.run_attempt }}' \
+            APP_DEPLOYED_AT_UTC='${{ needs.build-test-package.outputs.deployed_at_utc }}' \
           --output none
 
-    - name: Restart app after package update
+    - name: Deploy package via private native App Service deploy
       shell: bash
       run: |
         set -euo pipefail
-        az webapp restart \
+        az webapp deploy \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --src-path downloaded-artifact/deploy.zip \
+          --type zip \
+          --clean true \
+          --restart true
 
-    - name: Summarize deployment metadata
+    - name: Verify private health endpoint
+      shell: bash
+      run: |
+        set -euo pipefail
+        app_url='https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/v1/health'
+        expected='${{ needs.build-test-package.outputs.deployment_version }}'
+
+        for i in $(seq 1 30); do
+          http_status=$(curl -sS -o health.json -w '%{http_code}' "$app_url" || true)
+          if [ "$http_status" = "200" ] && jq -e --arg expected "$expected" '.status == "healthy" and .deployment.deploymentVersion == $expected' health.json > /dev/null; then
+            echo "Private health check passed on attempt $i"
+            exit 0
+          fi
+          echo "Attempt $i failed; status=$http_status"
+          sleep 10
+        done
+
+        echo 'Private health check failed'
+        cat health.json || true
+        exit 1
+
+    - name: Summarize deployment
       shell: bash
       run: |
         {
-          echo "### Middleware deployment"
-          echo ""
-          echo "- Deployment version: $DEPLOYMENT_VERSION"
-          echo "- Commit SHA: $GITHUB_SHA"
-          echo "- Package blob: $BLOB_NAME"
-          echo "- Deployed at (UTC): $DEPLOYED_AT_UTC"
+          echo '### Middleware deployment'
+          echo ''
+          echo '- Deploy mode: private native App Service deploy'
+          echo '- Deployment version: ${{ needs.build-test-package.outputs.deployment_version }}'
+          echo '- Commit SHA: ${{ github.sha }}'
+          echo '- Deploy target: production'
         } >> "$GITHUB_STEP_SUMMARY"
 
-    - name: Test deployment (retry until healthy)
-      if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_health_check == true }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        APP_URL="https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/v1/health"
-        echo "Checking health at $APP_URL"
-        attempts=30
-        delay=10
-        for i in $(seq 1 $attempts); do
-          http_status=$(curl -sS -o health.json -w '%{http_code}' "$APP_URL" || true)
-          if [ "$http_status" = "200" ] && jq -e --arg expected "$DEPLOYMENT_VERSION" '.status == "healthy" and .deployment.deploymentVersion == $expected' health.json > /dev/null; then
-            echo "Health check passed on attempt $i"
-            exit 0
-          fi
-          echo "Attempt $i failed; status=$http_status; waiting $delay seconds..."
-          sleep $delay
-        done
-        echo "Health check did not pass after $attempts attempts"
-        echo "Last response:" && cat health.json || true
-        exit 1
-
   cleanup-artifacts:
-    needs: build-and-deploy
+    needs: deploy-private
     runs-on: ubuntu-latest
     permissions:
       actions: write
