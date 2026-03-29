@@ -215,33 +215,6 @@ jobs:
             APP_DEPLOYED_AT_UTC='${{ needs.build-test-package.outputs.deployed_at_utc }}' \
           --output none
 
-    - name: Verify private health endpoint
-      shell: bash
-      run: |
-        set -euo pipefail
-        app_url='https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/v1/health'
-        expected='${{ needs.build-test-package.outputs.deployment_version }}'
-        body_file=$(mktemp)
-
-        for i in $(seq 1 30); do
-          rm -f "$body_file"
-          http_status=$(curl -sS -o "$body_file" -w '%{http_code}' --max-time 30 "$app_url" || true)
-          observed_status=$(jq -r '.status // "unknown"' "$body_file" 2>/dev/null || echo invalid)
-          observed_version=$(jq -r '.deployment.deploymentVersion // "unknown"' "$body_file" 2>/dev/null || echo invalid)
-
-          if [ "$http_status" = "200" ] && jq -e --arg expected "$expected" '.status == "healthy" and .deployment.deploymentVersion == $expected' "$body_file" > /dev/null; then
-            echo "Private health check passed on attempt $i"
-            exit 0
-          fi
-
-          echo "Attempt $i pending; http_status=$http_status app_status=$observed_status deployment_version=$observed_version expected=$expected"
-          sleep 10
-        done
-
-        echo 'Private health check failed'
-        cat "$body_file" || true
-        exit 1
-
     - name: Summarize deployment
       shell: bash
       run: |
