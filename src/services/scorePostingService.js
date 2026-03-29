@@ -3,6 +3,28 @@ const ghinClient = require('./ghinClient');
 
 const logger = createLogger('score-posting-service');
 
+function extractSearchScores(payload) {
+  if (payload && typeof payload === 'object' && Array.isArray(payload.Scores)) {
+    return payload.Scores;
+  }
+
+  throw Object.assign(new Error('Unexpected GHIN score search payload shape'), {
+    status: 502,
+    code: 'INVALID_SCORE_SEARCH_PAYLOAD'
+  });
+}
+
+function extractScoreDetail(payload) {
+  if (payload && typeof payload === 'object' && payload.scores && typeof payload.scores === 'object' && !Array.isArray(payload.scores)) {
+    return payload.scores;
+  }
+
+  throw Object.assign(new Error('Unexpected GHIN score detail payload shape'), {
+    status: 502,
+    code: 'INVALID_SCORE_DETAIL_PAYLOAD'
+  });
+}
+
 function normalizeMode(mode) {
   const normalized = String(mode || '').trim().toLowerCase();
   if (!['hbh', 'adjusted'].includes(normalized)) {
@@ -28,14 +50,37 @@ function extractScoreId(payload) {
 }
 
 function extractConfirmationRequired(payload) {
-  return Boolean(
-    payload?.confirmation_required
-    ?? payload?.confirmationRequired
-    ?? payload?.override_confirmation_required
-    ?? payload?.requires_confirmation
-    ?? payload?.requiresConfirmation
-    ?? false
-  );
+  const candidates = [
+    'confirmation_required',
+    'confirmationRequired',
+    'override_confirmation_required',
+    'requires_confirmation',
+    'requiresConfirmation'
+  ];
+
+  for (const key of candidates) {
+    if (!Object.prototype.hasOwnProperty.call(payload || {}, key)) {
+      continue;
+    }
+
+    const value = payload[key];
+    if (value === true || value === false) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return true;
+      if (normalized === 'false') return false;
+    }
+
+    if (value === 1 || value === '1') return true;
+    if (value === 0 || value === '0') return false;
+
+    return null;
+  }
+
+  return null;
 }
 
 function parseSeasonMonthDay(value) {
@@ -149,17 +194,26 @@ async function postScore(mode, scorePayload, correlationId) {
 }
 
 async function searchScores(filters = {}, correlationId) {
-  const results = await ghinClient.searchScores(filters);
+  const providerPayload = await ghinClient.searchScores(filters);
+  const scores = extractSearchScores(providerPayload);
+  const totalResults = providerPayload?.totalResults
+    ?? providerPayload?.total_results
+    ?? providerPayload?.TotalResults
+    ?? providerPayload?.Total_Results
+    ?? scores.length;
+
   return {
     success: true,
     correlationId,
-    results,
-    totalResults: Array.isArray(results) ? results.length : 0
+    scores,
+    totalResults
   };
 }
 
 async function getScore(scoreId, correlationId) {
-  const score = await ghinClient.getScore(scoreId);
+  const providerPayload = await ghinClient.getScore(scoreId);
+  const score = extractScoreDetail(providerPayload);
+
   return {
     success: true,
     correlationId,
