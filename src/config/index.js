@@ -34,6 +34,15 @@ function shouldUseMockMode() {
   return !(process.env.GHIN_SANDBOX_EMAIL && process.env.GHIN_SANDBOX_PASSWORD);
 }
 
+function isStartupDiagnosticsEnabled() {
+  const override = parseBoolean(process.env.STARTUP_DIAGNOSTICS);
+  if (override !== null) {
+    return override;
+  }
+
+  return (process.env.NODE_ENV || 'development') !== 'development';
+}
+
 module.exports = {
   // Server
   port: process.env.PORT || 5001,
@@ -102,7 +111,8 @@ module.exports = {
   // Logging
   logging: {
     level: process.env.LOG_LEVEL || 'info',
-    auditRetentionDays: parseInt(process.env.AUDIT_LOG_RETENTION_DAYS) || 90
+    auditRetentionDays: parseInt(process.env.AUDIT_LOG_RETENTION_DAYS) || 90,
+    startupDiagnostics: isStartupDiagnosticsEnabled()
   },
 
   // Azure Key Vault

@@ -10,11 +10,36 @@ const startupClock = {
   processStartIso: new Date().toISOString()
 };
 
+function parseBoolean(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+
+  return null;
+}
+
+const startupDiagnosticsOverride = parseBoolean(process.env.STARTUP_DIAGNOSTICS);
+const startupDiagnosticsEnabled = startupDiagnosticsOverride !== null
+  ? startupDiagnosticsOverride
+  : (process.env.NODE_ENV || 'development') !== 'development';
+
 function getStartupElapsedMs() {
   return Date.now() - startupClock.processStartMs;
 }
 
 function logStartupPhase(phase, details = {}) {
+  if (!startupDiagnosticsEnabled) {
+    return;
+  }
+
   console.log('[startup-phase]', JSON.stringify({
     phase,
     at: new Date().toISOString(),
@@ -302,7 +327,7 @@ async function bootstrap() {
       uptimeSeconds: Number(process.uptime().toFixed(3))
     });
 
-    logger.info('Startup summary', {
+    logger[startupDiagnosticsEnabled ? 'info' : 'debug']('Startup summary', {
       port: PORT,
       environment: config.env,
       ghinMode,
@@ -313,8 +338,7 @@ async function bootstrap() {
       reconciliationScheduler,
       deployment: runtimeInfo
     });
-    logger.info(`GHIN Middleware API listening on port ${PORT}`);
-    logger.info('✅ Startup complete - middleware is ready to accept requests');
+    logger.info(`✅ GHIN Middleware API listening on port ${PORT}`);
 
     trackEvent('ApplicationStartup', {
       port: PORT.toString(),

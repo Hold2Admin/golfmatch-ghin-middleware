@@ -50,7 +50,7 @@ async function connect() {
     });
 
     client.on('connect', () => {
-      logger.info(`Redis connected: ${config.redis.host}:${config.redis.port}`);
+      logger.debug(`Redis connected: ${config.redis.host}:${config.redis.port}`);
       isConnected = true;
     });
 

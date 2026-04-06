@@ -76,7 +76,7 @@ async function connect() {
     pool = await sql.connect(dbConfig);
     isConnected = true;
     hasLoggedMissingConfig = false;
-    logger.info(`Database connected: ${dbConfig.server}/${dbConfig.database}`);
+    logger.debug(`Database connected: ${dbConfig.server}/${dbConfig.database}`);
     return pool;
   } catch (error) {
     logger.error('Database connection failed', { error: error.message });

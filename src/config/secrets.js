@@ -9,10 +9,48 @@ const { DefaultAzureCredential } = require('@azure/identity');
 
 const keyVaultName = 'golfmatch-secrets';
 const keyVaultUrl = `https://${keyVaultName}.vault.azure.net`;
+const ansi = {
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  reset: '\x1b[0m'
+};
 
 let secretsCache;
 
+function formatStartupMessage(symbol, color, message) {
+  if (!process.stdout.isTTY || process.env.NO_COLOR === '1') {
+    return `${symbol} ${message}`;
+  }
+
+  return `${color}${symbol}${ansi.reset} ${message}`;
+}
+
+function parseBoolean(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+    return true;
+  }
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+
+  return null;
+}
+
+const startupDiagnosticsOverride = parseBoolean(process.env.STARTUP_DIAGNOSTICS);
+const startupDiagnosticsEnabled = startupDiagnosticsOverride !== null
+  ? startupDiagnosticsOverride
+  : (process.env.NODE_ENV || 'development') !== 'development';
+
 function logSecretPhase(phase, details = {}) {
+  if (!startupDiagnosticsEnabled) {
+    return;
+  }
+
   console.log('[startup-secrets]', JSON.stringify({
     phase,
     at: new Date().toISOString(),
@@ -45,7 +83,7 @@ async function loadSecrets() {
   if (secretsCache) return secretsCache;
 
   // Try Key Vault first (works with managed identity in Azure and locally with Azure CLI)
-  console.log('🔐 Attempting Key Vault via managed identity');
+  console.log(formatStartupMessage('🔐', ansi.cyan, 'Attempting Key Vault via managed identity'));
   const secretsLoadStartedMs = Date.now();
   logSecretPhase('keyvault-load-start', { keyVaultName });
   const credential = new DefaultAzureCredential();
@@ -155,7 +193,7 @@ async function loadSecrets() {
       REDIS_PASSWORD: redisPassword?.value
     };
 
-    console.log('✅ Secrets loaded from Key Vault');
+    console.log(formatStartupMessage('✅', ansi.green, 'Secrets loaded from Key Vault'));
     logSecretPhase('keyvault-load-complete', {
       durationMs: Date.now() - secretsLoadStartedMs
     });

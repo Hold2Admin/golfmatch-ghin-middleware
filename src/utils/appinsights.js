@@ -43,7 +43,7 @@ function initializeAppInsights() {
     client.context.tags[client.context.keys.cloudRole] = 'ghin-middleware-api';
     client.context.tags[client.context.keys.cloudRoleInstance] = process.env.WEBSITE_INSTANCE_ID || 'local';
 
-    logger.info('Application Insights initialized', {
+    logger.debug('Application Insights initialized', {
       connectionString: connectionString ? connectionString.substring(0, 16) + '...' : undefined,
       instrumentationKey: instrumentationKey ? instrumentationKey.substring(0, 8) + '...' : undefined
     });
