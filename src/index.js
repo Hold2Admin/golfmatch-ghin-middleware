@@ -132,6 +132,14 @@ async function initializeSecrets() {
   try {
     const secrets = await loadSecrets();
     Object.assign(process.env, secrets);
+
+    // Sandbox override: GHIN_ENVIRONMENT=sandbox flips outbound GHIN calls to the
+    // sandbox endpoint. Default (nothing set) uses Key Vault's GHIN-API-BASE-URL,
+    // which is the staging URL.
+    if (process.env.GHIN_ENVIRONMENT === 'sandbox') {
+      process.env.GHIN_API_BASE_URL = 'https://app-sandbox.hcp2020.com/api/v1';
+    }
+
     return { loaded: true, source: 'key-vault-or-local' };
   } catch (error) {
     return { loaded: false, source: 'process-env', warning: error.message };
@@ -339,6 +347,8 @@ async function bootstrap() {
       deployment: runtimeInfo
     });
     logger.info(`✅ GHIN Middleware API listening on port ${PORT}`);
+    const ghinEnvLabel = process.env.GHIN_API_BASE_URL?.includes('api-uat.ghin.com') ? 'Staging' : process.env.GHIN_API_BASE_URL?.includes('sandbox') ? 'Sandbox' : 'Unknown';
+    logger.info(`🌐 GHIN environment: ${ghinEnvLabel} (${process.env.GHIN_API_BASE_URL})`);
 
     trackEvent('ApplicationStartup', {
       port: PORT.toString(),
