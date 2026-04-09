@@ -68,6 +68,16 @@ jobs:
         cp package.json deploy-package/package.json
         cp package-lock.json deploy-package/package-lock.json
         cp README.md deploy-package/README.md
+        cat > deploy-package/deployment-info.json <<EOF
+        {
+          "deploymentVersion": "${{ steps.meta.outputs.deployment_version }}",
+          "commitSha": "${{ github.sha }}",
+          "runId": "${{ github.run_id }}",
+          "runAttempt": "${{ github.run_attempt }}",
+          "deployedAtUtc": "${{ steps.meta.outputs.deployed_at_utc }}",
+          "packageBlobName": null
+        }
+        EOF
 
         pushd deploy-package
         npm ci --omit=dev
@@ -114,24 +124,19 @@ jobs:
           --output json)
 
         remote_build=$(echo "$app_settings" | jq -r '.[] | select(.name=="SCM_DO_BUILD_DURING_DEPLOYMENT") | .value' | tail -n 1)
+        run_from_package=$(echo "$app_settings" | jq -r '.[] | select(.name=="WEBSITE_RUN_FROM_PACKAGE") | .value' | tail -n 1)
 
         if [ "$remote_build" = "true" ]; then
           echo "SCM_DO_BUILD_DURING_DEPLOYMENT must be false for prebuilt zipdeploy artifacts"
           exit 1
         fi
 
-    - name: Force package-mount deploy settings
-      shell: bash
-      run: |
-        set -euo pipefail
-        az webapp config appsettings set \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-          --settings \
-            WEBSITE_RUN_FROM_PACKAGE=1 \
-            SCM_DO_BUILD_DURING_DEPLOYMENT=false \
-            ENABLE_ORYX_BUILD=false \
-          --output none
+        case "$run_from_package" in
+          1|true)
+            echo "WEBSITE_RUN_FROM_PACKAGE must be unset for this Kudu zipdeploy workflow"
+            exit 1
+            ;;
+        esac
 
     - name: Resolve private Kudu publish credentials
       shell: bash
@@ -213,21 +218,6 @@ jobs:
         echo "Timed out waiting for ZipDeploy completion"
         curl -sS -u "$auth" "$KUDU_BASE_URL/api/deployments/latest/log" || true
         exit 1
-
-    - name: Stamp deployment metadata app settings
-      shell: bash
-      run: |
-        set -euo pipefail
-        az webapp config appsettings set \
-          --name ${{ env.AZURE_WEBAPP_NAME }} \
-          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-          --settings \
-            APP_DEPLOYMENT_VERSION='${{ needs.build-test-package.outputs.deployment_version }}' \
-            APP_DEPLOYMENT_SHA='${{ github.sha }}' \
-            APP_DEPLOYMENT_RUN_ID='${{ github.run_id }}' \
-            APP_DEPLOYMENT_RUN_ATTEMPT='${{ github.run_attempt }}' \
-            APP_DEPLOYED_AT_UTC='${{ needs.build-test-package.outputs.deployed_at_utc }}' \
-          --output none
 
     - name: Summarize deployment
       shell: bash
