@@ -108,16 +108,30 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        remote_build=$(az webapp config appsettings list \
+        app_settings=$(az webapp config appsettings list \
           --name ${{ env.AZURE_WEBAPP_NAME }} \
           --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-          --query "[?name=='SCM_DO_BUILD_DURING_DEPLOYMENT'] | [0].value" \
-          --output tsv)
+          --output json)
+
+        remote_build=$(echo "$app_settings" | jq -r '.[] | select(.name=="SCM_DO_BUILD_DURING_DEPLOYMENT") | .value' | tail -n 1)
 
         if [ "$remote_build" = "true" ]; then
           echo "SCM_DO_BUILD_DURING_DEPLOYMENT must be false for prebuilt zipdeploy artifacts"
           exit 1
         fi
+
+    - name: Force package-mount deploy settings
+      shell: bash
+      run: |
+        set -euo pipefail
+        az webapp config appsettings set \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --settings \
+            WEBSITE_RUN_FROM_PACKAGE=1 \
+            SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+            ENABLE_ORYX_BUILD=false \
+          --output none
 
     - name: Resolve private Kudu publish credentials
       shell: bash

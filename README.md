@@ -2,7 +2,7 @@
 
 Middleware service for transforming and securing USGA GHIN/WHS API data for the Fore Play golf pairing application.
 
-Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, full sandbox-accessible catalog projection into golfdb runtime, and the score-posting plus score-readback boundary are complete and validated. Golf Match runtime reads are already cut over to golfdb mirror tables, and the approval-track path now proceeds directly through the standalone staging-readiness checklist; further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
+Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, full sandbox-accessible catalog projection into golfdb runtime, and the score-posting plus score-readback boundary are complete and validated. Staging webhook ingress and tokenized GPA callback registration are now proven, the real inbox-driven approval workflow is working end to end, and Golf Match runtime reads are already cut over to golfdb mirror tables. Further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
 
 ## Architecture
 
@@ -78,6 +78,10 @@ src/
 - `GET /players/:ghinNumber` - Fetch player handicap
 - `POST /players/batch` - Fetch multiple players
 - `POST /players/search` - Search by name/club
+- `POST /players/:ghinNumber/request-access` - Request golfer product access email
+- `GET /players/:ghinNumber/access-status` - Read current golfer product access state
+- `DELETE /players/:ghinNumber/revoke-access` - Revoke golfer product access
+- `POST /players/:ghinNumber/approve-access` - Staging-only status update helper for deterministic admin tests; not the normal product approval path
 
 ### Course Endpoints
 - `GET /courses/:ghinCourseId` - Fetch course data
@@ -88,6 +92,8 @@ src/
 - `POST /scores/post` - Normalized score-post boundary for GHIN submission
 - `GET /scores/search` - Read official golfer scoring-record rows from GHIN
 - `GET /scores/:scoreId` - Read official GHIN detail for a single posted score
+
+Scoring-record note: GHIN score search/detail payloads do not provide a Par field. Middleware score-readback consumers should treat Par as course-runtime data, not as an official GHIN scoring-record field.
 
 ### Admin Endpoints
 - `GET /health` - Health check
@@ -141,6 +147,13 @@ Critical secrets stored in Azure Key Vault:
 - **Application Insights**: `golfmatch-insights` (set `APPLICATIONINSIGHTS_CONNECTION_STRING`)
 - **Logs**: Azure App Service logs
 - **Metrics**: Request rate, cache hit rate, error rate, latency
+
+## Staging Notes
+
+- Real GPA webhook delivery required opening third-party ingress to the middleware App Service; GHIN test and live webhook delivery are now validated.
+- GHIN GPA registration must use the tokenized callback URL (`GHIN_GPA_WEBHOOK_URL` + `?token=` + `GHIN_GPA_WEBHOOK_TOKEN`). Registering the bare path causes middleware `400` rejects.
+- The real product approval path is inbox-driven. The middleware still exposes status-update helpers for staging/admin testing, but Fore Play should not present that as the normal approval story.
+- Do not assume staging course/tee catalogs match sandbox or previously mirrored data. Current staging evidence already shows tee-set ID and rating drift on real courses, so bulk staging import plus ongoing webhook/reconciliation sync should happen before trusting score posting broadly.
 
 ## Development Phases
 

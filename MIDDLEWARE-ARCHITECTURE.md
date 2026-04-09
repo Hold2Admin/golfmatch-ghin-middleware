@@ -1,8 +1,8 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** March 28, 2026  
+**Last Updated:** April 9, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, full sandbox-accessible catalog projection into golfdb runtime, and the normalized GHIN score-posting plus score-readback boundary are validated; approval-track work is now centered on staging-readiness follow-through, not more runtime cutover speculation
+**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, full sandbox-accessible catalog projection into golfdb runtime, and the normalized GHIN score-posting plus score-readback boundary are validated; staging webhook delivery and real inbox-driven GPA approval are now proven, and approval-track work is centered on staging data-quality follow-through rather than more runtime cutover speculation
 
 ---
 
@@ -44,6 +44,12 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - Bulk stage 1 CacheDB writer work remains a future scaling task, but it is no longer a gate before the standalone staging-readiness checklist path.
 - Score readback/search is now proven end to end for the approval track: Golf Match consumes middleware `/api/v1/scores/search` and `/api/v1/scores/:scoreId` to power the Profile `Handicap` scoring-record experience and scorecard deep-link path.
 - Live sandbox contract capture is now documented as authoritative for score readback: GHIN score search currently returns a top-level `Scores` wrapper, while GHIN score detail currently returns a nested `scores` object. Golf Match app-side normalization was corrected against those real payloads rather than assumed naming consistency.
+- Real staging GPA webhook ingress was blocked at the App Service edge until public third-party access was allowed; after that fix, GHIN test webhooks and live golfer-approval callbacks delivered successfully through middleware.
+- GHIN GPA registration must use the tokenized callback URL. Registering the bare callback path caused middleware `400` rejects even after ingress was fixed.
+- The production-like approval story is now inbox-driven. Middleware staging status-update helpers still exist for deterministic admin testing, but they are not the normal product approval path.
+- GHIN score search/detail payloads include official differential/PCC fields when returned, but they do not provide Par. Any scoring-record Par display must come from separate course runtime data, not from GHIN score payload truth.
+- Early staging course validation shows tee-set drift against mirrored runtime data. Example: Shinnecock Hills (`6616`) now returns Green tee `757952` at `72.5/140`, while golfdb runtime still held Green tee `146336` at `72.3/134`; stale tee-set IDs can surface as `This tee is non-eligible` on score posting.
+- Carry-forward staging course rule: do not assume sandbox, staging, and mirrored course catalogs align. Bulk-import staging courses, classify incomplete/unusable rejects, then rely on webhook plus scheduled reconciliation to keep tee/rating data current.
 
 ---
 
