@@ -181,6 +181,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' })); // Parse JSON bodies with size limit
+app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Parse form bodies for inbound provider webhooks
 app.use(sanitizeHeaders); // Sanitize headers
 app.use(addCorrelationId); // Add correlation ID for request tracking
 app.use(trackRequestMetrics); // Track request metrics and timing

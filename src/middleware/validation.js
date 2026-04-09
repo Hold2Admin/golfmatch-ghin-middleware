@@ -7,6 +7,24 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('validation');
 
+function acceptsFormEncodedWebhook(req) {
+  return req.path === '/api/v1/webhooks/ghin/gpa';
+}
+
+function isAcceptedContentType(req) {
+  const contentType = req.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    return true;
+  }
+
+  if (acceptsFormEncodedWebhook(req) && contentType.includes('application/x-www-form-urlencoded')) {
+    return true;
+  }
+
+  return false;
+}
+
 /**
  * Validate request body size and content
  */
@@ -18,7 +36,7 @@ function validateRequest(req, res, next) {
 
   // Validate content-type
   const contentType = req.get('content-type');
-  if (!contentType || !contentType.includes('application/json')) {
+  if (!contentType || !isAcceptedContentType(req)) {
     logger.warn('Invalid content-type', {
       path: req.path,
       contentType,
@@ -27,7 +45,9 @@ function validateRequest(req, res, next) {
     return res.status(415).json({
       error: {
         code: 'UNSUPPORTED_MEDIA_TYPE',
-        message: 'Content-Type must be application/json'
+        message: acceptsFormEncodedWebhook(req)
+          ? 'Content-Type must be application/json or application/x-www-form-urlencoded'
+          : 'Content-Type must be application/json'
       }
     });
   }

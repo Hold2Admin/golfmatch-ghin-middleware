@@ -181,6 +181,11 @@ router.post(
       await ensureRuntimeSecretsLoaded();
       assertWebhookToken(req, 'GHIN_GPA_WEBHOOK_TOKEN');
 
+      logger.info('Received GPA webhook', {
+        contentType: req.get('content-type') || null,
+        payloadKeys: Object.keys(req.body || {})
+      });
+
       const callbackResult = await forwardWebhookPayload('GHIN_GPA_CALLBACK_URL', req.body || {});
 
       return res.status(202).json({
