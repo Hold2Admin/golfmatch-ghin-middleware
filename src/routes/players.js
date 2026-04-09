@@ -274,6 +274,46 @@ router.post(
   }
 );
 
+router.get(
+  '/:ghinNumber/access-status',
+  [
+    param('ghinNumber')
+      .isNumeric()
+      .isLength({ min: 6, max: 10 })
+      .withMessage('GHIN number must be 6-10 digits')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid GHIN number format',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumber } = req.params;
+
+    try {
+      logger.info(`Fetching golfer product access status for ${ghinNumber}`);
+
+      const result = await ghinClient.getGolferProductAccessStatus(ghinNumber);
+      return res.json(result);
+    } catch (error) {
+      logger.error('Error fetching golfer product access status', { ghinNumber, error: error.message });
+      return res.status(502).json({
+        error: {
+          code: 'GHIN_API_ERROR',
+          message: error.message || 'Failed to fetch golfer product access status',
+          retryable: true
+        }
+      });
+    }
+  }
+);
+
 router.post(
   '/:ghinNumber/approve-access',
   [

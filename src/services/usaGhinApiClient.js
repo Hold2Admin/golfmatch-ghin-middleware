@@ -96,6 +96,7 @@ const ALLOWLIST = [
   { method: 'GET',  pattern: /^\/golfers\/\d+\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/search\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/\d+\.json$/ },
+  { method: 'GET',  pattern: /^\/users\/accesses\.json$/ },
   { method: 'POST', pattern: /^\/scores\/hbh\.json$/ },
   { method: 'POST', pattern: /^\/scores\/adjusted\.json$/ },
   { method: 'POST', pattern: /^\/scores\.json$/ },
@@ -443,6 +444,34 @@ async function revokeGolferProductAccess(ghinNumber) {
     `/users/golfers/${encodeURIComponent(golferId)}/revoke_golfer_product_access.json`,
     {}
   );
+}
+
+async function getGolferProductAccessStatus(ghinNumber) {
+  const golferId = String(ghinNumber || '').trim();
+  if (!golferId) {
+    throw new Error('GHIN number is required');
+  }
+
+  const data = await request('GET', '/users/accesses.json', {
+    golfer_id: golferId,
+    page: 1,
+    per_page: 25
+  });
+
+  const golfers = Array.isArray(data?.golfers) ? data.golfers : [];
+  const matched = golfers.find((entry) => String(entry?.golfer?.id || '') === golferId) || golfers[0] || null;
+  const rawStatus = String(matched?.user_access?.gpa_status || '').trim().toLowerCase();
+  const normalizedStatus = ['pending', 'approved', 'inactive'].includes(rawStatus)
+    ? rawStatus
+    : 'inactive';
+
+  return {
+    ghinNumber: golferId,
+    status: normalizedStatus,
+    userAccessId: matched?.user_access?.id ? String(matched.user_access.id) : null,
+    golferName: matched?.user_access?.golfer_name || null,
+    hasAccess: Boolean(matched)
+  };
 }
 
 // ============================================================
@@ -800,6 +829,7 @@ module.exports = {
   searchScores,
   getScore,
   requestGolferProductAccess,
+  getGolferProductAccessStatus,
   updateGolferProductAccessStatus,
   revokeGolferProductAccess,
   getWebhookSettings,

@@ -149,6 +149,26 @@ async function initializeSecrets() {
 const app = express();
 const logger = createLogger('app');
 
+function isWebhookRequest(req) {
+  return typeof req.path === 'string' && req.path.startsWith('/api/v1/webhooks/');
+}
+
+function logWebhookIngress(req, _res, next) {
+  if (isWebhookRequest(req)) {
+    logger.info('Webhook ingress hit', {
+      method: req.method,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      contentType: req.get('content-type') || null,
+      contentLength: req.get('content-length') || null,
+      ip: req.ip,
+      userAgent: req.get('user-agent') || null
+    });
+  }
+
+  next();
+}
+
 // ============================================================
 // Middleware
 // ============================================================
@@ -180,14 +200,12 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+app.use(logWebhookIngress);
 app.use(express.json({ limit: '10mb' })); // Parse JSON bodies with size limit
 app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Parse form bodies for inbound provider webhooks
 app.use(sanitizeHeaders); // Sanitize headers
 app.use(addCorrelationId); // Add correlation ID for request tracking
 app.use(trackRequestMetrics); // Track request metrics and timing
-app.use(validateRequest); // Validate request structure
-app.use(conditionalAuth); // API Key authentication (except /health and /)
-app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
 
 // ============================================================
 // Routes
@@ -199,11 +217,16 @@ const coursesRouter = require('./routes/courses');
 const scoresRouter = require('./routes/scores');
 const webhooksRouter = require('./routes/webhooks');
 
+app.use('/api/v1/webhooks', webhooksRouter);
+
+app.use(validateRequest); // Validate request structure
+app.use(conditionalAuth); // API Key authentication (except /health and /)
+app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
+
 app.use('/api/v1/health', healthRouter);
 app.use('/api/v1/players', playersRouter);
 app.use('/api/v1/courses', coursesRouter);
 app.use('/api/v1/scores', scoresRouter);
-app.use('/api/v1/webhooks', webhooksRouter);
 
 // Root endpoint
 app.get('/', (req, res) => {

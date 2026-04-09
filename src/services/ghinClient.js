@@ -57,6 +57,22 @@ async function requestGolferProductAccess(ghinNumber, email) {
   return usaGhinApiClient.requestGolferProductAccess(ghinNumber, email);
 }
 
+async function getGolferProductAccessStatus(ghinNumber) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Fetching golfer product access status for ${ghinNumber}`);
+    return {
+      ghinNumber: String(ghinNumber),
+      status: 'inactive',
+      userAccessId: null,
+      golferName: null,
+      hasAccess: false
+    };
+  }
+
+  logger.info(`[LIVE] Fetching golfer product access status for ${ghinNumber}`);
+  return usaGhinApiClient.getGolferProductAccessStatus(ghinNumber);
+}
+
 async function updateGolferProductAccessStatus(ghinNumber, status) {
   if (config.ghin.useMock) {
     logger.info(`[MOCK] Updating golfer product access for ${ghinNumber} -> ${status}`);
@@ -303,6 +319,7 @@ module.exports = {
   getPlayer,
   searchPlayers,
   requestGolferProductAccess,
+  getGolferProductAccessStatus,
   updateGolferProductAccessStatus,
   revokeGolferProductAccess,
   getCourse,
