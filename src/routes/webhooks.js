@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
@@ -14,6 +15,29 @@ const logger = createLogger('webhooks');
 async function ensureRuntimeSecretsLoaded() {
   const secrets = await loadSecrets();
   Object.assign(process.env, secrets);
+}
+
+function createTraceId(prefix = 'webhook') {
+  if (typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function getWebhookScalar(payload, keys) {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  for (const key of keys) {
+    const value = payload[key];
+    if (value !== null && value !== undefined && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+
+  return null;
 }
 
 function getCourseIdFromPayload(payload) {
@@ -58,7 +82,7 @@ function assertWebhookToken(req, tokenEnvKey) {
   }
 }
 
-async function forwardWebhookPayload(callbackUrlEnvKey, payload) {
+async function forwardWebhookPayload(callbackUrlEnvKey, payload, forwardHeaders = {}, traceContext = {}) {
   const callbackUrl = process.env[callbackUrlEnvKey];
   const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY || process.env.MIDDLEWARE_API_KEY;
 
@@ -76,11 +100,23 @@ async function forwardWebhookPayload(callbackUrlEnvKey, payload) {
     });
   }
 
+  logger.info('Forwarding webhook payload', {
+    traceId: traceContext.traceId || null,
+    callbackUrlEnvKey,
+    callbackUrl,
+    payloadKeys: Object.keys(payload || {}),
+    webhookId: traceContext.webhookId || null,
+    webhookSentAt: traceContext.webhookSentAt || null,
+    objectType: traceContext.objectType || null,
+    action: traceContext.action || null
+  });
+
   const response = await fetch(callbackUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': callbackApiKey
+      'x-api-key': callbackApiKey,
+      ...forwardHeaders
     },
     body: JSON.stringify(payload || {})
   });
@@ -95,11 +131,27 @@ async function forwardWebhookPayload(callbackUrlEnvKey, payload) {
 
   if (!response.ok) {
     const details = parsed ? JSON.stringify(parsed) : bodyText;
+    logger.error('Webhook forward failed', {
+      traceId: traceContext.traceId || null,
+      callbackUrl,
+      status: response.status,
+      webhookId: traceContext.webhookId || null,
+      responseBody: details
+    });
     throw Object.assign(new Error(`Webhook forward failed (${response.status}): ${details}`), {
       status: 502,
       code: 'WEBHOOK_FORWARD_FAILED'
     });
   }
+
+  logger.info('Webhook forward completed', {
+    traceId: traceContext.traceId || null,
+    callbackUrl,
+    status: response.status,
+    webhookId: traceContext.webhookId || null,
+    callbackMode: parsed?.mode || null,
+    callbackUpdatedUsers: parsed?.updatedUsers ?? null
+  });
 
   return parsed;
 }
@@ -181,15 +233,42 @@ router.post(
       await ensureRuntimeSecretsLoaded();
       assertWebhookToken(req, 'GHIN_GPA_WEBHOOK_TOKEN');
 
+      const traceId = String(req.get('x-webhook-trace-id') || '').trim() || createTraceId('gpa');
+      const webhookId = getWebhookScalar(req.body, ['webhook_id', 'webhookId']);
+      const webhookSentAt = getWebhookScalar(req.body, ['webhook_sent_at', 'webhookSentAt']);
+      const objectType = getWebhookScalar(req.body, ['object_type', 'objectType']);
+      const action = getWebhookScalar(req.body, ['action', 'event', 'eventType']);
+
       logger.info('Received GPA webhook', {
+        traceId,
         contentType: req.get('content-type') || null,
-        payloadKeys: Object.keys(req.body || {})
+        payloadKeys: Object.keys(req.body || {}),
+        webhookId,
+        webhookSentAt,
+        objectType,
+        action,
+        originalUrl: req.originalUrl
       });
 
-      const callbackResult = await forwardWebhookPayload('GHIN_GPA_CALLBACK_URL', req.body || {});
+      const callbackResult = await forwardWebhookPayload(
+        'GHIN_GPA_CALLBACK_URL',
+        req.body || {},
+        {
+          'x-webhook-trace-id': traceId,
+          ...(webhookId ? { 'x-ghin-webhook-id': webhookId } : {})
+        },
+        {
+          traceId,
+          webhookId,
+          webhookSentAt,
+          objectType,
+          action
+        }
+      );
 
       return res.status(202).json({
         status: 'accepted',
+        traceId,
         forwarded: true,
         callbackResult
       });
