@@ -152,21 +152,27 @@ async function loadSecrets() {
     });
 
     const webhookBatchStartedMs = Date.now();
-    const [courseWebhookUrl, courseWebhookToken, webhookBaseUrl, importCallbackUrl] = await Promise.all([
+    const [courseWebhookUrl, courseWebhookToken, gpaWebhookUrl, gpaWebhookToken, webhookBaseUrl, importCallbackUrl, gpaCallbackUrl] = await Promise.all([
       getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-URL', 'GHIN_COURSE_WEBHOOK_URL']),
       getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-TOKEN', 'GHIN_COURSE_WEBHOOK_TOKEN']),
+      getFirstSecret(client, ['GHIN-GPA-WEBHOOK-URL', 'GHIN_GPA_WEBHOOK_URL']),
+      getFirstSecret(client, ['GHIN-GPA-WEBHOOK-TOKEN', 'GHIN_GPA_WEBHOOK_TOKEN']),
       getFirstSecret(client, ['GHIN-WEBHOOK-BASE-URL', 'GHIN_WEBHOOK_BASE_URL']),
-      getFirstSecret(client, ['GHIN-IMPORT-CALLBACK-URL', 'GHIN_IMPORT_CALLBACK_URL'])
+      getFirstSecret(client, ['GHIN-IMPORT-CALLBACK-URL', 'GHIN_IMPORT_CALLBACK_URL']),
+      getFirstSecret(client, ['GHIN-GPA-CALLBACK-URL', 'GHIN_GPA_CALLBACK_URL'])
     ]);
 
     logSecretPhase('keyvault-webhook-secrets-complete', {
       durationMs: Date.now() - webhookBatchStartedMs,
-      requestedCount: 4,
+      requestedCount: 7,
       loadedCount: countLoadedValues([
         courseWebhookUrl,
         courseWebhookToken,
+        gpaWebhookUrl,
+        gpaWebhookToken,
         webhookBaseUrl,
-        importCallbackUrl
+        importCallbackUrl,
+        gpaCallbackUrl
       ])
     });
 
@@ -178,8 +184,11 @@ async function loadSecrets() {
       GHIN_MIDDLEWARE_API_KEY: middlewareApiKey?.value,
       GHIN_COURSE_WEBHOOK_URL: courseWebhookUrl,
       GHIN_COURSE_WEBHOOK_TOKEN: courseWebhookToken,
+      GHIN_GPA_WEBHOOK_URL: gpaWebhookUrl,
+      GHIN_GPA_WEBHOOK_TOKEN: gpaWebhookToken,
       GHIN_WEBHOOK_BASE_URL: webhookBaseUrl,
       GHIN_IMPORT_CALLBACK_URL: importCallbackUrl,
+      GHIN_GPA_CALLBACK_URL: gpaCallbackUrl,
       API_KEY_HASH_SECRET: apiKeySecret?.value,
       GHIN_CACHE_DB_SERVER: cacheDbServer,
       GHIN_CACHE_DB_NAME: cacheDbName,
