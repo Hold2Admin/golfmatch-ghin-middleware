@@ -169,6 +169,24 @@ function logWebhookIngress(req, _res, next) {
   next();
 }
 
+function isGeolocationCourseSearchRequest(req) {
+  if (req.method !== 'POST') {
+    return false;
+  }
+
+  const normalizedPath = typeof req.path === 'string' ? req.path.toLowerCase() : '';
+  if (normalizedPath !== '/api/v1/courses/search') {
+    return false;
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const query = req.query && typeof req.query === 'object' ? req.query : {};
+  const latitude = body.latitude ?? body.lat ?? query.latitude ?? query.lat ?? null;
+  const longitude = body.longitude ?? body.lng ?? query.longitude ?? query.lng ?? null;
+
+  return latitude !== null && longitude !== null;
+}
+
 // ============================================================
 // Middleware
 // ============================================================
@@ -221,7 +239,27 @@ app.use('/api/v1/webhooks', webhooksRouter);
 
 app.use(validateRequest); // Validate request structure
 app.use(conditionalAuth); // API Key authentication (except /health and /)
-app.use(rateLimiter({ windowMs: 60000, maxRequests: 100 })); // Rate limiting
+app.use(rateLimiter({
+  windowMs: 60000,
+  maxRequests: config.rateLimit.requestsPerMin,
+  keyPrefix: 'default'
+}));
+app.use('/api/v1/scores', rateLimiter({
+  windowMs: 60000,
+  maxRequests: config.rateLimit.scoreRequestsPerMin,
+  keyPrefix: 'scores'
+}));
+app.use((req, res, next) => {
+  if (!isGeolocationCourseSearchRequest(req)) {
+    return next();
+  }
+
+  return rateLimiter({
+    windowMs: 60000,
+    maxRequests: config.rateLimit.geolocationCourseSearchRequestsPerMin,
+    keyPrefix: 'courses-geolocation'
+  })(req, res, next);
+});
 
 app.use('/api/v1/health', healthRouter);
 app.use('/api/v1/players', playersRouter);

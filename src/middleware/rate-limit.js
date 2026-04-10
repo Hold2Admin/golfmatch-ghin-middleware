@@ -25,17 +25,22 @@ const DEFAULT_MAX_REQUESTS = 100; // 100 requests per minute
 function rateLimiter(options = {}) {
   const windowMs = options.windowMs || DEFAULT_WINDOW_MS;
   const maxRequests = options.maxRequests || DEFAULT_MAX_REQUESTS;
+  const keyPrefix = options.keyPrefix || 'default';
+  const resolveKey = typeof options.keyResolver === 'function'
+    ? options.keyResolver
+    : (req) => req.headers['x-api-key'] || req.ip;
 
   return (req, res, next) => {
-    const apiKey = req.headers['x-api-key'] || req.ip; // Fall back to IP if no API key
+    const rawKey = String(resolveKey(req) || req.ip || 'anonymous');
+    const storeKey = `${keyPrefix}:${rawKey}`;
     const now = Date.now();
 
     // Initialize or get existing record
-    if (!rateLimitStore.has(apiKey)) {
-      rateLimitStore.set(apiKey, { count: 0, resetTime: now + windowMs });
+    if (!rateLimitStore.has(storeKey)) {
+      rateLimitStore.set(storeKey, { count: 0, resetTime: now + windowMs });
     }
 
-    const record = rateLimitStore.get(apiKey);
+    const record = rateLimitStore.get(storeKey);
 
     // Reset counter if window has passed
     if (now > record.resetTime) {
@@ -51,7 +56,8 @@ function rateLimiter(options = {}) {
       const retryAfter = Math.ceil((record.resetTime - now) / 1000);
       
       logger.warn('Rate limit exceeded', {
-        apiKey: apiKey.substring(0, 8) + '...',
+        bucket: keyPrefix,
+        apiKey: rawKey.substring(0, 8) + '...',
         count: record.count,
         maxRequests,
         retryAfter

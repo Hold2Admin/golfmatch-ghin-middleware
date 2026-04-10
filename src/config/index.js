@@ -91,8 +91,10 @@ module.exports = {
 
   // Rate Limiting
   rateLimit: {
-    requestsPerMin: parseInt(process.env.RATE_LIMIT_REQUESTS_PER_MIN) || 100,
-    requestsPerDay: parseInt(process.env.RATE_LIMIT_REQUESTS_PER_DAY) || 5000
+    requestsPerMin: parseInt(process.env.RATE_LIMIT_REQUESTS_PER_MIN) || 10000,
+    requestsPerDay: parseInt(process.env.RATE_LIMIT_REQUESTS_PER_DAY) || 5000,
+    scoreRequestsPerMin: parseInt(process.env.RATE_LIMIT_SCORE_REQUESTS_PER_MIN) || 750,
+    geolocationCourseSearchRequestsPerMin: parseInt(process.env.RATE_LIMIT_GEOSEARCH_REQUESTS_PER_MIN) || 10
   },
 
   // Cache TTLs (in seconds)
