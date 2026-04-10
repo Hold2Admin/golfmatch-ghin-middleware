@@ -1,7 +1,7 @@
 # GolfMatch GHIN Middleware — Roadmap
 
-**Last Updated:** March 26, 2026  
-**Status:** Runtime read-path cutover is validated; state-partition backfill and CacheDB -> GolfDB bulk projection are proven; stage 1 CacheDB batching is the next middleware milestone
+**Last Updated:** April 10, 2026  
+**Status:** Runtime read-path cutover, webhook/reconciliation automation, score posting/readback, staging webhook ingress, and inbox-driven GPA approval are validated. The active middleware priority is staging-readiness support and evidence capture; stage 1 CacheDB writer redesign is deferred future scaling work rather than the current gate.
 
 ---
 
@@ -39,18 +39,26 @@
 
 ---
 
-## Phase 2 🔄 (Current — Catalog Scale Hardening)
+## Phase 2 🔄 (Current — Staging Readiness Support)
 
-### Runtime Cutover and Catalog Population
+### Approval-Track Runtime Support
 - [x] Audit GHIN-backed gameplay/admin reads in Golf Match
 - [x] Remove remaining middleware runtime-read dependencies for course/tee/hole serving
 - [x] Prove mirror-first reads use `GhinRuntime*` tables end-to-end
 - [x] Add state-partition course discovery/backfill for unknown GHIN catalog coverage
 - [x] Validate split pipeline: stage 1 GHIN -> CacheDB, stage 2 CacheDB -> GolfDB
 - [x] Implement and prove CacheDB -> GolfDB bulk projector on real state runs
-- [ ] Replace stage 1 per-course CacheDB writes with set-based bulk CacheDB writer
-- [ ] Resume broader-state and national backfill with the new stage 1 writer
+- [x] Prove normalized score posting via `/api/v1/scores/post`
+- [x] Prove normalized score readback via `/api/v1/scores/search` and `/api/v1/scores/:scoreId`
+- [x] Prove staging webhook ingress after App Service third-party access enablement
+- [x] Prove tokenized GPA callback registration and real inbox-driven approval flow
+- [x] Document staging course/tee drift as a real-data sync concern, not a runtime-contract blocker
 - [ ] Keep migration `025_drop_golfdb_ghin_mock_tables.sql` deferred until the validation/cleanup window passes
+- [ ] Support the remaining staging checklist work from a stable middleware boundary
+
+### Deferred Scaling Track
+- [ ] Replace stage 1 per-course CacheDB writes with set-based bulk CacheDB writer
+- [ ] Resume broader-state and national backfill only when that scaling work becomes active again
 
 ---
 
@@ -81,15 +89,17 @@ Golf Match should:
 2. Middleware remains the sync/normalization boundary, not the gameplay read authority.
 3. No silent repair path is allowed for invalid GHIN course payloads.
 4. Gender-based tee selection remains mandatory.
-5. CacheDB -> GolfDB bulk projection stays as the stage 2 model; the remaining scale fix is a bulk stage 1 CacheDB writer.
-6. Player caching/live handicap pulls are intentionally deferred until after catalog population is scale-safe.
+5. CacheDB -> GolfDB bulk projection stays as the stage 2 model.
+6. Bulk stage 1 CacheDB writer redesign is deferred scaling work, not the current release gate.
+7. Player caching/live handicap pulls are intentionally deferred until after the current staging-readiness path and evidence capture are complete.
 
 ---
 
 ## Next Steps
 
-1. [ ] Implement the stage 1 bulk CacheDB writer for `GHIN_Courses`, `GHIN_Tees`, and `GHIN_Holes`
-2. [ ] Re-run broader-state backfill proving with the new stage 1 writer
+1. [ ] Keep the middleware boundary stable while staging checklist validation continues in Golf Match
+2. [ ] Capture any additional staging data-quality findings without introducing hidden runtime fallbacks
 3. [ ] Validate cleanup-window criteria before considering migration 025
-4. [ ] Implement Phase 3 live handicap pulls/player caching
+4. [ ] Revisit the stage 1 bulk CacheDB writer only when catalog-scale tuning becomes active work again
+5. [ ] Implement Phase 3 live handicap pulls/player caching after the current staging-readiness path is closed
 

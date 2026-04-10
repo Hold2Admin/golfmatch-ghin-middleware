@@ -23,7 +23,7 @@ GolfMatch API ◄──► GHIN Middleware ◄──► GHIN/WHS API
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - Azure SQL Database (for caching)
 - Azure Cache for Redis
 - Azure Key Vault access
@@ -52,22 +52,29 @@ Server runs on `http://localhost:5001`
 
 ```
 src/
-├── index.js              # Express app entry point
-├── config/               # Configuration loaders
-├── middleware/           # Express middleware (auth, rate limiting)
-├── routes/               # API endpoints
-│   ├── players.js
+├── index.js                  # Express app entry point and route mounts
+├── config/                   # Runtime config and secret loaders
+├── middleware/               # Express middleware (auth, rate limiting, validation)
+├── routes/                   # API endpoints
 │   ├── courses.js
-│   └── health.js
-├── services/             # Business logic
-│   ├── ghinClient.js     # GHIN API client (mock → real)
-│   ├── cacheService.js   # Redis caching
-│   └── transformers/     # Data transformation logic
-├── db/                   # Database access
-│   ├── migrations/       # SQL schema scripts
-│   └── queries/          # SQL query builders
-├── mocks/                # Mock GHIN API responses
-└── utils/                # Shared utilities
+│   ├── health.js
+│   ├── players.js
+│   ├── scores.js
+│   └── webhooks.js
+├── services/                 # Business logic and infrastructure adapters
+│   ├── courseSyncService.js
+│   ├── database.js
+│   ├── ghinClient.js
+│   ├── ghinWebhookService.js
+│   ├── reconciliationScheduler.js
+│   ├── redis.js
+│   ├── scorePostingService.js
+│   ├── syncMetricsService.js
+│   ├── usaGhinApiClient.js
+│   └── transformers/
+├── mocks/                    # Mock GHIN API responses
+├── utils/                    # Logging, telemetry, runtime metadata
+└── logs/                     # Local runtime log output
 ```
 
 ## API Endpoints
@@ -85,8 +92,12 @@ src/
 
 ### Course Endpoints
 - `GET /courses/:ghinCourseId` - Fetch course data
+- `GET /courses/:ghinCourseId/posting-season` - Fetch posting-season metadata for score-post validation
 - `POST /courses/search` - Search courses
-- `POST /courses/import` - Import course to Fore Play
+- `POST /courses/import` - Import course to Fore Play (callback-based import job)
+- `GET /courses/state/:state` - Lightweight course listing by state
+- `GET /courses/:ghinCourseId/tees` - Return normalized tees for a course
+- `GET /courses/:ghinCourseId/holes` - Return normalized hole baselines for a selected tee/gender
 
 ### Score Endpoints
 - `POST /scores/post` - Normalized score-post boundary for GHIN submission
@@ -95,18 +106,32 @@ src/
 
 Scoring-record note: GHIN score search/detail payloads do not provide a Par field. Middleware score-readback consumers should treat Par as course-runtime data, not as an official GHIN scoring-record field.
 
-### Admin Endpoints
-- `GET /health` - Health check
-- `POST /sync/courses/:id` - Refresh course data
+### Health + Webhook Endpoints
+- `GET /health` - Public health/runtime identity check
+- `POST /webhooks/ghin/course?token=...` - GHIN course webhook ingress
+- `POST /webhooks/ghin/gpa?token=...` - GHIN GPA callback ingress
+- `GET /webhooks/ghin/course/status` - Inspect registered course webhook status
+- `GET /webhooks/ghin/gpa/status` - Inspect registered GPA webhook status
+- `GET /webhooks/ghin/course/metrics` - View in-memory and durable course sync metrics
+- `GET /webhooks/ghin/course/list` - List registered GHIN course webhooks
+- `POST /webhooks/ghin/course/test` - Trigger GHIN course webhook test
+- `POST /webhooks/ghin/gpa/test` - Trigger GHIN GPA webhook test
+- `POST /webhooks/ghin/course/ensure` - Ensure GHIN course webhook registration
+- `POST /webhooks/ghin/gpa/ensure` - Ensure GHIN GPA webhook registration
+- `POST /webhooks/ghin/course/reconcile` - Run explicit reconciliation for selected or discovered course sets
 
 ## Authentication
 
-All endpoints require `X-API-Key` header:
+Application endpoints under `/api/v1/players`, `/api/v1/courses`, and `/api/v1/scores` require `X-API-Key`:
 
 ```bash
 curl -H "X-API-Key: your-api-key-here" \
   https://localhost:5001/api/v1/players/1234567
 ```
+
+Auth exceptions:
+- `/` and `/api/v1/health` are public runtime/health endpoints.
+- GHIN webhook ingress uses tokenized callback validation (`?token=...`) rather than `X-API-Key`.
 
 ## Testing
 
@@ -165,7 +190,9 @@ Critical secrets stored in Azure Key Vault:
 
 ## Documentation
 
-See `MIDDLEWARE-ARCHITECTURE.md` in this repo for the current middleware architecture and implementation status.
+See `MIDDLEWARE-ARCHITECTURE.md` for the current middleware architecture and implementation status.
+
+See `ROADMAP.md` for the current execution priorities. At this checkpoint, staging-readiness support is the active track and stage 1 CacheDB writer redesign is deferred scaling work rather than the current release gate.
 
 ## License
 
