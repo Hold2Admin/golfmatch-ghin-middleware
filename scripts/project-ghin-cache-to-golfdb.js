@@ -9,6 +9,7 @@
  *   node scripts/project-ghin-cache-to-golfdb.js --states=US-NY --batch-size=100
  *   node scripts/project-ghin-cache-to-golfdb.js --states=US-NY --mode=missing --dry-run
  *   node scripts/project-ghin-cache-to-golfdb.js --ids=10210,10820
+ *   node scripts/project-ghin-cache-to-golfdb.js --states=US-NY --exclude-ids=3857
  */
 
 const crypto = require('crypto');
@@ -20,6 +21,7 @@ function parseArgs(argv) {
   const args = {
     ids: [],
     states: [],
+    excludeIds: [],
     mode: 'out-of-sync',
     batchSize: 100,
     limit: 0,
@@ -43,6 +45,10 @@ function parseArgs(argv) {
     switch (flag) {
       case '--ids':
         args.ids.push(...value.split(',').map((item) => String(item).trim()).filter(Boolean));
+        break;
+      case '--exclude-ids':
+      case '--exclude-course-ids':
+        args.excludeIds.push(...parseCourseIds(value));
         break;
       case '--states':
         args.states.push(...value.split(',').map(normalizeState).filter(Boolean));
@@ -71,6 +77,7 @@ function parseArgs(argv) {
 
   args.ids = Array.from(new Set(args.ids.map((id) => String(id).trim()).filter(Boolean)));
   args.states = Array.from(new Set(args.states));
+  args.excludeIds = Array.from(new Set(args.excludeIds));
 
   if (!['out-of-sync', 'all', 'missing', 'stale'].includes(args.mode)) {
     throw new Error('Invalid --mode value. Expected one of: out-of-sync, all, missing, stale');
@@ -86,6 +93,15 @@ function normalizeState(rawState) {
   }
 
   return normalized.startsWith('US-') ? normalized.slice(3) : normalized;
+}
+
+function parseCourseIds(value) {
+  return Array.from(new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+  ));
 }
 
 function normalizeMirrorGender(rawGender) {
@@ -124,6 +140,46 @@ function formatPercent(completed, total) {
   }
 
   return ((completed / total) * 100).toFixed(1);
+}
+
+function createProjectionPhaseTimings() {
+  return {
+    buildPayloadMs: 0,
+    courseMergeMs: 0,
+    holeDeleteMs: 0,
+    teeDeleteMs: 0,
+    teeInsertMs: 0,
+    holeInsertMs: 0,
+    commitMs: 0
+  };
+}
+
+function addProjectionPhaseTimings(target, source) {
+  if (!target || !source) {
+    return target;
+  }
+
+  for (const key of Object.keys(target)) {
+    target[key] += Number(source[key] || 0);
+  }
+
+  return target;
+}
+
+function formatProjectionPhaseTimings(phaseTimings) {
+  if (!phaseTimings) {
+    return 'phases=n/a';
+  }
+
+  return [
+    `buildPayload=${formatDurationMs(phaseTimings.buildPayloadMs)}`,
+    `courseMerge=${formatDurationMs(phaseTimings.courseMergeMs)}`,
+    `holeDelete=${formatDurationMs(phaseTimings.holeDeleteMs)}`,
+    `teeDelete=${formatDurationMs(phaseTimings.teeDeleteMs)}`,
+    `teeInsert=${formatDurationMs(phaseTimings.teeInsertMs)}`,
+    `holeInsert=${formatDurationMs(phaseTimings.holeInsertMs)}`,
+    `commit=${formatDurationMs(phaseTimings.commitMs)}`
+  ].join(' ');
 }
 
 function normalizeText(value) {
@@ -268,9 +324,10 @@ async function getGolfDbPool(secrets) {
 
 async function getCandidateCourseIds(args) {
   const dbSql = database.sql;
+  const excludedSet = new Set(args.excludeIds.map((id) => String(id)));
 
   if (args.ids.length) {
-    return args.ids;
+    return args.ids.filter((id) => !excludedSet.has(String(id)));
   }
 
   const limitClause = args.limit > 0 ? 'TOP (@limit)' : '';
@@ -286,7 +343,7 @@ async function getCandidateCourseIds(args) {
       }
     );
 
-    return rows.map((row) => String(row.courseId)).filter(Boolean);
+    return rows.map((row) => String(row.courseId)).filter(Boolean).filter((courseId) => !excludedSet.has(courseId));
   }
 
   const rows = await database.query(
@@ -296,7 +353,7 @@ async function getCandidateCourseIds(args) {
     args.limit > 0 ? { limit: { type: dbSql.Int, value: args.limit } } : {}
   );
 
-  return rows.map((row) => String(row.courseId)).filter(Boolean);
+  return rows.map((row) => String(row.courseId)).filter(Boolean).filter((courseId) => !excludedSet.has(courseId));
 }
 
 async function loadCacheProjectionData(courseIds) {
@@ -516,18 +573,23 @@ function filterProjectionData(data, targetIds) {
 
 async function applyProjectionBatch(pool, data) {
   if (!data.coursePayloads.length) {
-    return;
+    return { phaseTimings: createProjectionPhaseTimings() };
   }
 
+  const phaseTimings = createProjectionPhaseTimings();
   const tx = new sql.Transaction(pool);
   await tx.begin();
 
   try {
-    const request = new sql.Request(tx);
-    await request
-      .input('coursesJson', sql.NVarChar(sql.MAX), JSON.stringify(data.coursePayloads))
-      .input('teesJson', sql.NVarChar(sql.MAX), JSON.stringify(data.teesPayload))
-      .input('holesJson', sql.NVarChar(sql.MAX), JSON.stringify(data.holesPayload))
+    const payloadBuildStartedAtMs = Date.now();
+    const coursesJson = JSON.stringify(data.coursePayloads);
+    const teesJson = JSON.stringify(data.teesPayload);
+    const holesJson = JSON.stringify(data.holesPayload);
+    phaseTimings.buildPayloadMs = Date.now() - payloadBuildStartedAtMs;
+
+    const courseMergeStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
       .query(`
         MERGE dbo.GhinRuntimeCourses AS target
         USING (
@@ -563,7 +625,13 @@ async function applyProjectionBatch(pool, data) {
         WHEN NOT MATCHED THEN
           INSERT (GhinCourseId, FacilityId, FacilityName, CourseName, ShortCourseName, City, State, Country, PayloadHash, SourceLastChangedAt, LastSyncedAt, CreatedAt, UpdatedAt)
           VALUES (src.GhinCourseId, src.FacilityId, src.FacilityName, src.CourseName, src.ShortCourseName, src.City, src.[State], src.Country, src.PayloadHash, TRY_CONVERT(datetime2, src.SourceLastChangedAt), GETUTCDATE(), GETUTCDATE(), GETUTCDATE());
+      `);
+    phaseTimings.courseMergeMs = Date.now() - courseMergeStartedAtMs;
 
+    const holeDeleteStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
+      .query(`
         DELETE h
         FROM dbo.GhinRuntimeHoles h
         INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
@@ -572,14 +640,27 @@ async function applyProjectionBatch(pool, data) {
           FROM OPENJSON(@coursesJson)
           WITH (GhinCourseId VARCHAR(50) '$.ghinCourseId')
         );
+      `);
+    phaseTimings.holeDeleteMs = Date.now() - holeDeleteStartedAtMs;
 
+    const teeDeleteStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
+      .query(`
         DELETE FROM dbo.GhinRuntimeTees
         WHERE GhinCourseId IN (
           SELECT GhinCourseId
           FROM OPENJSON(@coursesJson)
           WITH (GhinCourseId VARCHAR(50) '$.ghinCourseId')
         );
+      `);
+    phaseTimings.teeDeleteMs = Date.now() - teeDeleteStartedAtMs;
 
+    const teeInsertStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
+      .input('teesJson', sql.NVarChar(sql.MAX), teesJson)
+      .query(`
         INSERT INTO dbo.GhinRuntimeTees (
           GhinRuntimeCourseId,
           GhinCourseId,
@@ -650,7 +731,13 @@ async function applyProjectionBatch(pool, data) {
         ) AS src
         INNER JOIN dbo.GhinRuntimeCourses courses
           ON courses.GhinCourseId = src.GhinCourseId;
+      `);
+    phaseTimings.teeInsertMs = Date.now() - teeInsertStartedAtMs;
 
+    const holeInsertStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('holesJson', sql.NVarChar(sql.MAX), holesJson)
+      .query(`
         INSERT INTO dbo.GhinRuntimeHoles (
           GhinRuntimeTeeId,
           GhinTeeId,
@@ -685,8 +772,12 @@ async function applyProjectionBatch(pool, data) {
           ON runtimeTees.GhinCourseId = src.GhinCourseId
          AND runtimeTees.GhinTeeId = src.GhinTeeId;
       `);
+    phaseTimings.holeInsertMs = Date.now() - holeInsertStartedAtMs;
 
+    const commitStartedAtMs = Date.now();
     await tx.commit();
+    phaseTimings.commitMs = Date.now() - commitStartedAtMs;
+    return { phaseTimings };
   } catch (error) {
     try {
       await tx.rollback();
@@ -723,7 +814,7 @@ async function run() {
     };
 
     console.log(
-      `Starting GolfDB projection: requested=${summary.requested} mode=${summary.mode} dryRun=${summary.dryRun} batchSize=${summary.batchSize} batches=${requestedBatches.length}`
+      `Starting GolfDB projection: requested=${summary.requested} mode=${summary.mode} dryRun=${summary.dryRun} batchSize=${summary.batchSize} batches=${requestedBatches.length} excludeIds=${args.excludeIds.length}`
     );
 
     const runStartedAtMs = Date.now();
@@ -737,7 +828,9 @@ async function run() {
         `[projection] batch ${batchNumber}/${requestedBatches.length} starting requested=${processedBeforeBatch + 1}-${Math.min(processedBeforeBatch + idsChunk.length, summary.requested)} of ${summary.requested}`
       );
 
+      const cacheLoadStartedAtMs = Date.now();
       const cacheData = await loadCacheProjectionData(idsChunk);
+      const cacheLoadDurationMs = Date.now() - cacheLoadStartedAtMs;
 
       for (const invalid of cacheData.invalidCourses) {
         summary.failed += 1;
@@ -749,10 +842,12 @@ async function run() {
         continue;
       }
 
+      const hashLookupStartedAtMs = Date.now();
       const golfHashes = await getGolfPayloadHashes(
         golfPool,
         cacheData.coursePayloads.map((course) => course.ghinCourseId)
       );
+      const hashLookupDurationMs = Date.now() - hashLookupStartedAtMs;
 
       const missingIds = [];
       const staleIds = [];
@@ -789,10 +884,15 @@ async function run() {
       }
 
       const targetData = filterProjectionData(cacheData, targetIds);
+      let projectionPhaseTimings = createProjectionPhaseTimings();
+      let usedFallbackProjection = false;
+
       try {
-        await applyProjectionBatch(golfPool, targetData);
+        const batchProjection = await applyProjectionBatch(golfPool, targetData);
+        projectionPhaseTimings = batchProjection.phaseTimings;
         summary.projected += targetIds.length;
       } catch (batchError) {
+        usedFallbackProjection = true;
         if (targetIds.length === 1) {
           summary.failed += 1;
           summary.failures.push({ courseId: targetIds[0], error: batchError.message });
@@ -802,7 +902,8 @@ async function run() {
         for (const courseId of targetIds) {
           const singleData = filterProjectionData(cacheData, [courseId]);
           try {
-            await applyProjectionBatch(golfPool, singleData);
+            const singleProjection = await applyProjectionBatch(golfPool, singleData);
+            addProjectionPhaseTimings(projectionPhaseTimings, singleProjection.phaseTimings);
             summary.projected += 1;
           } catch (singleError) {
             summary.failed += 1;
@@ -821,6 +922,10 @@ async function run() {
 
       console.log(
         `[projection] batch ${batchNumber}/${requestedBatches.length} complete ${requestedProcessed}/${summary.requested} (${formatPercent(requestedProcessed, summary.requested)}%) projected=${summary.projected} missing=${summary.missing} stale=${summary.stale} nochange=${summary.nochange} failed=${summary.failed} batchElapsed=${formatDurationMs(Date.now() - batchStartedAtMs)} totalElapsed=${formatDurationMs(elapsedMs)} eta=${formatDurationMs(etaMs)}`
+      );
+
+      console.log(
+        `[projection-detail] batch ${batchNumber}/${requestedBatches.length} targetCourses=${targetIds.length} targetTees=${targetData.teesPayload.length} targetHoles=${targetData.holesPayload.length} cacheLoad=${formatDurationMs(cacheLoadDurationMs)} hashLookup=${formatDurationMs(hashLookupDurationMs)} ${formatProjectionPhaseTimings(projectionPhaseTimings)} fallback=${usedFallbackProjection ? 'yes' : 'no'}`
       );
     }
 

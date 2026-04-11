@@ -6,6 +6,7 @@
  * Usage:
  *   node scripts/purge-ghin-state.js --state=US-CT --yes
  *   node scripts/purge-ghin-state.js --state=CT --dry-run
+ *   node scripts/purge-ghin-state.js --state=US-NY --exclude-course-ids=3857 --yes
  */
 
 const fs = require('fs');
@@ -24,11 +25,21 @@ function normalizeState(rawState) {
   return normalized.startsWith('US-') ? normalized.slice(3) : normalized;
 }
 
+function parseCourseIds(value) {
+  return Array.from(new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+  ));
+}
+
 function parseArgs(argv) {
   const args = {
     state: null,
     dryRun: false,
     yes: false,
+    excludeCourseIds: [],
     checkpointPath: DEFAULT_CHECKPOINT_PATH,
     resetCheckpointState: true
   };
@@ -55,10 +66,17 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (flag === '--exclude-course-ids' || flag === '--exclude-ids') {
+      args.excludeCourseIds.push(...parseCourseIds(value));
+      continue;
+    }
+
     if (flag === '--checkpoint') {
       args.checkpointPath = path.resolve(value);
     }
   }
+
+  args.excludeCourseIds = Array.from(new Set(args.excludeCourseIds));
 
   if (!args.state) {
     throw new Error('Missing required --state=US-XX argument.');
@@ -92,22 +110,28 @@ async function getGolfDbPool(secrets) {
   return pool.connect();
 }
 
-async function getCacheCounts(state) {
+async function getCacheCounts(state, excludeCourseIds = []) {
   const dbSql = database.sql;
   const rows = await database.query(
     `SELECT
-       (SELECT COUNT(1) FROM dbo.GHIN_Courses WHERE State = @state) AS courseCount,
+       (SELECT COUNT(1)
+        FROM dbo.GHIN_Courses
+        WHERE State = @state
+          AND CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS courseCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Tees t
         INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
-        WHERE c.State = @state) AS teeCount,
+        WHERE c.State = @state
+          AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS teeCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Holes h
         INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
         INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
-        WHERE c.State = @state) AS holeCount`,
+        WHERE c.State = @state
+          AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS holeCount`,
     {
-      state: { type: dbSql.VarChar(10), value: state }
+      state: { type: dbSql.VarChar(10), value: state },
+      excludeIdsJson: { type: dbSql.NVarChar(dbSql.MAX), value: JSON.stringify(excludeCourseIds) }
     }
   );
 
@@ -118,21 +142,27 @@ async function getCacheCounts(state) {
   };
 }
 
-async function getGolfCounts(pool, state) {
+async function getGolfCounts(pool, state, excludeCourseIds = []) {
   const result = await pool.request()
     .input('state', sql.NVarChar(50), state)
+    .input('excludeIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(excludeCourseIds))
     .query(`
       SELECT
-        (SELECT COUNT(1) FROM dbo.GhinRuntimeCourses WHERE [State] = @state) AS courseCount,
+        (SELECT COUNT(1)
+         FROM dbo.GhinRuntimeCourses
+         WHERE [State] = @state
+           AND GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS courseCount,
         (SELECT COUNT(1)
          FROM dbo.GhinRuntimeTees t
          INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-         WHERE c.[State] = @state) AS teeCount,
+         WHERE c.[State] = @state
+           AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS teeCount,
         (SELECT COUNT(1)
          FROM dbo.GhinRuntimeHoles h
          INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
          INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-         WHERE c.[State] = @state) AS holeCount
+         WHERE c.[State] = @state
+           AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS holeCount
     `);
 
   return {
@@ -142,7 +172,7 @@ async function getGolfCounts(pool, state) {
   };
 }
 
-async function purgeGolfState(pool, state) {
+async function purgeGolfState(pool, state, excludeCourseIds = []) {
   const tx = new sql.Transaction(pool);
   await tx.begin();
 
@@ -150,20 +180,24 @@ async function purgeGolfState(pool, state) {
     const req = new sql.Request(tx);
     await req
       .input('state', sql.NVarChar(50), state)
+      .input('excludeIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(excludeCourseIds))
       .query(`
         DELETE h
         FROM dbo.GhinRuntimeHoles h
         INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
         INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-        WHERE c.[State] = @state;
+        WHERE c.[State] = @state
+          AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
 
         DELETE t
         FROM dbo.GhinRuntimeTees t
         INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-        WHERE c.[State] = @state;
+        WHERE c.[State] = @state
+          AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
 
         DELETE FROM dbo.GhinRuntimeCourses
-        WHERE [State] = @state;
+        WHERE [State] = @state
+          AND GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
       `);
 
     await tx.commit();
@@ -177,7 +211,7 @@ async function purgeGolfState(pool, state) {
   }
 }
 
-async function purgeCacheState(state) {
+async function purgeCacheState(state, excludeCourseIds = []) {
   const pool = await database.connect();
   if (!pool) {
     throw new Error('Cache DB is not configured.');
@@ -191,9 +225,11 @@ async function purgeCacheState(state) {
     const req = new dbSql.Request(tx);
     await req
       .input('state', dbSql.VarChar(10), state)
+      .input('excludeIdsJson', dbSql.NVarChar(dbSql.MAX), JSON.stringify(excludeCourseIds))
       .query(`
         DELETE FROM dbo.GHIN_Courses
-        WHERE State = @state;
+        WHERE State = @state
+          AND CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
       `);
 
     await tx.commit();
@@ -271,13 +307,14 @@ async function run() {
 
   try {
     const before = {
-      golf: await getGolfCounts(golfPool, args.state),
-      cache: await getCacheCounts(args.state)
+      golf: await getGolfCounts(golfPool, args.state, args.excludeCourseIds),
+      cache: await getCacheCounts(args.state, args.excludeCourseIds)
     };
 
     const summary = {
       state: args.state,
       dryRun: args.dryRun,
+      excludeCourseIds: args.excludeCourseIds,
       before,
       after: null,
       checkpoint: args.resetCheckpointState && !args.dryRun
@@ -286,11 +323,11 @@ async function run() {
     };
 
     if (!args.dryRun) {
-      await purgeGolfState(golfPool, args.state);
-      await purgeCacheState(args.state);
+      await purgeGolfState(golfPool, args.state, args.excludeCourseIds);
+      await purgeCacheState(args.state, args.excludeCourseIds);
       summary.after = {
-        golf: await getGolfCounts(golfPool, args.state),
-        cache: await getCacheCounts(args.state)
+        golf: await getGolfCounts(golfPool, args.state, args.excludeCourseIds),
+        cache: await getCacheCounts(args.state, args.excludeCourseIds)
       };
     }
 

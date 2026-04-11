@@ -890,7 +890,7 @@ function validateCourseMirrorShape(course) {
         throw new Error(`Course ${courseId} tees[${teeIndex}].holes[${holeIndex}] has invalid holeNumber ${holeNumber}`);
       }
 
-      if (![3, 4, 5].includes(par)) {
+      if (par < 2 || par > 7) {
         throw new Error(`Course ${courseId} tees[${teeIndex}].holes[${holeIndex}] has invalid par ${par}`);
       }
     });

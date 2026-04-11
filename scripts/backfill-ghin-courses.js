@@ -18,14 +18,17 @@
  *   node scripts/backfill-ghin-courses.js --states=US-CT --validate-only
  *   node scripts/backfill-ghin-courses.js --dry-run --search-concurrency=8
  *   node scripts/backfill-ghin-courses.js --reset-checkpoint
+ *   node scripts/backfill-ghin-courses.js --states=US-NY --projection-mode=none --exclude-course-ids=3857
  */
 
 const fs = require('fs');
 const path = require('path');
 const database = require('../src/services/database');
 const { loadSecrets } = require('../src/config/secrets');
+const specialImportOverrides = require('./config/special-course-import-overrides');
 
 const CHECKPOINT_PATH = path.join(__dirname, 'logs', 'ghin-course-backfill-checkpoint.json');
+const STATE_AUDIT_DIR = path.join(__dirname, 'logs', 'state-audits');
 const US_JURISDICTION_CODES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL',
   'GA', 'GU', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA',
@@ -34,6 +37,543 @@ const US_JURISDICTION_CODES = [
   'PR', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'VI',
   'WA', 'WV', 'WI', 'WY', 'AS', 'MP'
 ];
+
+function cloneHole(hole) {
+  return {
+    ...hole
+  };
+}
+
+function cloneTee(tee) {
+  return {
+    ...tee,
+    holes: Array.isArray(tee?.holes) ? tee.holes.map(cloneHole) : []
+  };
+}
+
+function cloneCourse(course, teesOverride = null) {
+  return {
+    ...course,
+    tees: Array.isArray(teesOverride)
+      ? teesOverride.map(cloneTee)
+      : Array.isArray(course?.tees)
+        ? course.tees.map(cloneTee)
+        : []
+  };
+}
+
+function cloneAndNormalizeHole(hole, nextHoleNumber = null) {
+  return {
+    ...hole,
+    holeNumber: nextHoleNumber == null ? hole?.holeNumber : nextHoleNumber
+  };
+}
+
+function summarizeTeeForAudit(tee, extra = {}) {
+  return {
+    teeId: String(tee?.teeId || ''),
+    teeName: tee?.teeName || null,
+    gender: tee?.gender || null,
+    teeSetSide: tee?.teeSetSide || 'All18',
+    ...extra
+  };
+}
+
+function inspectCourseComponentValidity(course, validateCourseForSync) {
+  const validTees = [];
+  const validTeeAudit = [];
+  const invalidTees = [];
+
+  for (const tee of course?.tees || []) {
+    const teeClone = cloneTee(tee);
+    try {
+      validateCourseForSync(cloneCourse(course, [teeClone]));
+      validTees.push(teeClone);
+      validTeeAudit.push(summarizeTeeForAudit(teeClone, {
+        holeCount: Array.isArray(teeClone.holes) ? teeClone.holes.length : 0
+      }));
+    } catch (error) {
+      invalidTees.push(summarizeTeeForAudit(teeClone, {
+        holeCount: Array.isArray(teeClone.holes) ? teeClone.holes.length : 0,
+        reason: error.message
+      }));
+    }
+  }
+
+  return {
+    validTees,
+    audit: {
+      totalTeeCount: validTees.length + invalidTees.length,
+      validTeeCount: validTees.length,
+      invalidTeeCount: invalidTees.length,
+      pruneCandidate: validTees.length > 0 && invalidTees.length > 0,
+      validTees: validTeeAudit,
+      invalidTees
+    }
+  };
+}
+
+function extractSampleHoleNumbers(reason) {
+  const message = String(reason || '');
+  const sampleMatch = message.match(/Sample:\s+(.+)$/i);
+  if (!sampleMatch) {
+    return [];
+  }
+
+  return sampleMatch[1]
+    .split(',')
+    .map((entry) => String(entry || '').trim())
+    .map((entry) => Number(entry.split(':')[1]))
+    .filter((holeNumber) => Number.isFinite(holeNumber));
+}
+
+function analyzeInvalidTeeFailure(teeAudit) {
+  const reason = String(teeAudit?.reason || '');
+  const holeCount = Number(teeAudit?.holeCount || 0);
+  const missingRowCountMatch = reason.match(/for\s+(\d+)\s+hole rows/i);
+  const missingRowCount = missingRowCountMatch ? Number(missingRowCountMatch[1]) : null;
+  const sampleHoleNumbers = extractSampleHoleNumbers(reason);
+  const sampleMinHole = sampleHoleNumbers.length > 0 ? Math.min(...sampleHoleNumbers) : null;
+  const sampleMaxHole = sampleHoleNumbers.length > 0 ? Math.max(...sampleHoleNumbers) : null;
+
+  if (reason.includes('missing holes[]')) {
+    return {
+      shape: 'missing_holes_payload',
+      holeCount,
+      reason
+    };
+  }
+
+  if (reason.includes('invalid par') || reason.includes('CK_GHIN_Holes_Par')) {
+    return {
+      shape: 'invalid_par',
+      holeCount,
+      reason
+    };
+  }
+
+  if (reason.includes('invalid holeNumber') || reason.includes('could not be normalized to 9 holes')) {
+    return {
+      shape: 'malformed_tee_structure',
+      holeCount,
+      reason
+    };
+  }
+
+  if (reason.includes('missing hole handicap/allocation data')) {
+    if (missingRowCount != null && holeCount > 0 && missingRowCount === holeCount) {
+      return {
+        shape: holeCount === 9 ? 'all_published_holes_missing_handicap_9h' : 'all_published_holes_missing_handicap',
+        holeCount,
+        reason
+      };
+    }
+
+    if (missingRowCount === 9 && holeCount === 18 && sampleMinHole != null && sampleMaxHole != null) {
+      if (sampleMinHole >= 10 && sampleMaxHole <= 18) {
+        return {
+          shape: 'back_nine_missing_handicap_only',
+          holeCount,
+          reason
+        };
+      }
+
+      if (sampleMinHole >= 1 && sampleMaxHole <= 9) {
+        return {
+          shape: 'front_nine_missing_handicap_only',
+          holeCount,
+          reason
+        };
+      }
+    }
+
+    return {
+      shape: 'mixed_missing_handicap_pattern',
+      holeCount,
+      reason
+    };
+  }
+
+  return {
+    shape: 'other',
+    holeCount,
+    reason
+  };
+}
+
+function classifyZeroValidTeeFailureBucket(componentAudit) {
+  const invalidTees = Array.isArray(componentAudit?.invalidTees) ? componentAudit.invalidTees : [];
+  if (!invalidTees.length) {
+    return 'irreconcilable_no_valid_tees';
+  }
+
+  const teeAnalyses = invalidTees.map(analyzeInvalidTeeFailure);
+  const shapes = new Set(teeAnalyses.map((tee) => tee.shape));
+
+  if (shapes.has('missing_holes_payload')) {
+    return 'irreconcilable_missing_holes_payload';
+  }
+
+  if (shapes.has('invalid_par')) {
+    return 'irreconcilable_invalid_par';
+  }
+
+  if (shapes.has('malformed_tee_structure')) {
+    return 'irreconcilable_malformed_tee_structure';
+  }
+
+  if (shapes.size === 1) {
+    const [shape] = Array.from(shapes);
+
+    if (shape === 'back_nine_missing_handicap_only') {
+      return 'review_front_nine_only_normalization_candidate';
+    }
+
+    if (shape === 'front_nine_missing_handicap_only') {
+      return 'review_back_nine_only_normalization_candidate';
+    }
+
+    if (shape === 'all_published_holes_missing_handicap_9h') {
+      return 'irreconcilable_all_nine_hole_handicaps_missing';
+    }
+
+    if (shape === 'all_published_holes_missing_handicap') {
+      return 'irreconcilable_all_published_hole_handicaps_missing';
+    }
+
+    if (shape === 'mixed_missing_handicap_pattern') {
+      return 'irreconcilable_mixed_missing_handicap_patterns';
+    }
+  }
+
+  if (Array.from(shapes).every((shape) => shape.startsWith('all_published_holes_missing_handicap'))) {
+    return 'irreconcilable_mixed_all_published_hole_handicaps_missing';
+  }
+
+  if (Array.from(shapes).every((shape) => shape.includes('missing_handicap'))) {
+    return 'irreconcilable_mixed_missing_handicap_patterns';
+  }
+
+  return 'irreconcilable_mixed_zero_valid_tee_shapes';
+}
+
+function classifyFailureBucket(errorMessage, componentAudit = null) {
+  if (componentAudit?.pruneCandidate) {
+    return 'repairable_partial_component_prune_candidate';
+  }
+
+  if (componentAudit && componentAudit.validTeeCount === 0 && componentAudit.invalidTeeCount > 0) {
+    return classifyZeroValidTeeFailureBucket(componentAudit);
+  }
+
+  const message = String(errorMessage || '');
+
+  if (message.includes('missing hole handicap/allocation data')) {
+    return 'irreconcilable_missing_handicap';
+  }
+
+  if (message.includes('missing holes[]')) {
+    return 'irreconcilable_missing_holes';
+  }
+
+  if (message.includes('invalid par') || message.includes('CK_GHIN_Holes_Par')) {
+    return 'irreconcilable_invalid_par';
+  }
+
+  if (message.includes('invalid holeNumber')) {
+    return 'irreconcilable_invalid_hole_number';
+  }
+
+  if (
+    message.includes('deadlocked on lock resources')
+    || message.includes('Mirror callback failed (500)')
+    || message.includes('timeout')
+    || message.includes('ECONNRESET')
+    || message.includes('ETIMEDOUT')
+  ) {
+    return 'retryable_operational';
+  }
+
+  return 'other';
+}
+
+function normalizeFrontNineOnlyCourse(course) {
+  const transformedTees = [];
+
+  for (const tee of course?.tees || []) {
+    const holes = Array.isArray(tee?.holes) ? tee.holes.map(cloneHole) : [];
+    let selectedHoles = [];
+
+    if (holes.length === 9) {
+      selectedHoles = holes
+        .filter((hole) => Number(hole?.holeNumber) >= 1 && Number(hole?.holeNumber) <= 9)
+        .sort((left, right) => Number(left.holeNumber) - Number(right.holeNumber))
+        .map((hole, index) => cloneAndNormalizeHole(hole, index + 1));
+    } else if (holes.length === 18) {
+      const frontNine = holes
+        .filter((hole) => Number(hole?.holeNumber) >= 1 && Number(hole?.holeNumber) <= 9)
+        .sort((left, right) => Number(left.holeNumber) - Number(right.holeNumber));
+      selectedHoles = frontNine.map((hole, index) => cloneAndNormalizeHole(hole, index + 1));
+    } else {
+      throw new Error(`Course ${course?.courseId || ''} tee ${tee?.teeId || ''} could not be normalized to 9 holes.`);
+    }
+
+    const parF9 = tee?.parF9 ?? selectedHoles.reduce((total, hole) => total + Number(hole?.par || 0), 0);
+    const yardageF9 = tee?.yardageF9 ?? selectedHoles.reduce((total, hole) => total + Number(hole?.yardage || 0), 0);
+
+    transformedTees.push({
+      ...tee,
+      teeSetSide: 'F9',
+      courseRating: tee?.courseRatingF9 ?? tee?.courseRating ?? null,
+      slope: tee?.slopeRatingF9 ?? tee?.slope ?? null,
+      par: parF9,
+      yardage: yardageF9,
+      courseRatingF9: tee?.courseRatingF9 ?? tee?.courseRating ?? null,
+      slopeRatingF9: tee?.slopeRatingF9 ?? tee?.slope ?? null,
+      parF9,
+      yardageF9,
+      courseRatingB9: null,
+      slopeRatingB9: null,
+      parB9: null,
+      yardageB9: null,
+      holes: selectedHoles
+    });
+  }
+
+  return cloneCourse(course, transformedTees);
+}
+
+function normalizeRawGender(rawGender) {
+  const normalized = String(rawGender || '').trim().toUpperCase();
+  return normalized === 'W' || normalized === 'F' ? 'F' : 'M';
+}
+
+function createTeeMatchKey(tee) {
+  return `${normalizeRawGender(tee?.gender)}::${String(tee?.teeName || '').trim().toLowerCase()}`;
+}
+
+function transformBackNineHoles(holes, handicapOffset = 1) {
+  return (holes || []).map((hole, index) => ({
+    ...cloneHole(hole),
+    holeNumber: index + 10,
+    handicap: hole?.handicap == null ? null : Number(hole.handicap) + handicapOffset
+  }));
+}
+
+function composeNineHoleComboCourse(comboCourse, frontCourse, backCourse, override) {
+  const normalizedFront = normalizeFrontNineOnlyCourse(frontCourse);
+  const normalizedBack = normalizeFrontNineOnlyCourse(backCourse);
+  const frontByKey = new Map((normalizedFront.tees || []).map((tee) => [createTeeMatchKey(tee), tee]));
+  const backByKey = new Map((normalizedBack.tees || []).map((tee) => [createTeeMatchKey(tee), tee]));
+  const handicapOffset = Number.isFinite(override?.backNineHandicapOffset)
+    ? Number(override.backNineHandicapOffset)
+    : 1;
+
+  const combinedTees = (comboCourse?.tees || []).map((comboTee) => {
+    const key = createTeeMatchKey(comboTee);
+    const frontTee = frontByKey.get(key);
+    const backTee = backByKey.get(key);
+
+    if (!frontTee || !backTee) {
+      throw new Error(
+        `Course ${comboCourse?.courseId || ''} could not match combo tee ${comboTee?.teeName || ''}/${comboTee?.gender || ''} to component nines.`
+      );
+    }
+
+    const frontHoles = (frontTee.holes || []).map((hole, index) => cloneAndNormalizeHole(hole, index + 1));
+    const backHoles = transformBackNineHoles(backTee.holes || [], handicapOffset);
+
+    return {
+      ...comboTee,
+      teeSetSide: comboTee?.teeSetSide || 'All18',
+      holes: [...frontHoles, ...backHoles]
+    };
+  });
+
+  return cloneCourse(comboCourse, combinedTees);
+}
+
+function getSpecialImportOverride(courseId) {
+  return specialImportOverrides[String(courseId)] || null;
+}
+
+function tryPrepareSpecialImport(course, override, validateCourseForSync, triggerErrorMessage, inspection = null) {
+  if (!override) {
+    return null;
+  }
+
+  if (override.strategy === 'front-nine-nine-hole') {
+    const transformedCourse = normalizeFrontNineOnlyCourse(course);
+    validateCourseForSync(transformedCourse);
+
+    return {
+      applied: true,
+      course: transformedCourse,
+      specialImport: {
+        courseId: String(course.courseId || ''),
+        courseName: course.courseName || null,
+        strategy: override.strategy,
+        note: override.note || null,
+        triggerError: triggerErrorMessage,
+        originalTeeCount: Array.isArray(course?.tees) ? course.tees.length : 0,
+        keptTeeCount: Array.isArray(transformedCourse?.tees) ? transformedCourse.tees.length : 0,
+        prunedTeeCount: 0,
+        keptTees: (transformedCourse?.tees || []).map((tee) => summarizeTeeForAudit(tee, {
+          holeCount: Array.isArray(tee?.holes) ? tee.holes.length : 0,
+          teeSetSide: tee?.teeSetSide || 'F9'
+        })),
+        prunedTees: []
+      }
+    };
+  }
+
+  if (override.strategy !== 'drop-invalid-tees') {
+    return null;
+  }
+
+  const resolvedInspection = inspection || inspectCourseComponentValidity(course, validateCourseForSync);
+  const minimumValidTees = Number.isFinite(override.minimumValidTees)
+    ? Math.max(1, Math.floor(override.minimumValidTees))
+    : 1;
+
+  if (!resolvedInspection.audit.pruneCandidate || resolvedInspection.audit.validTeeCount < minimumValidTees) {
+    return {
+      applied: false,
+      componentAudit: resolvedInspection.audit
+    };
+  }
+
+  const prunedCourse = cloneCourse(course, resolvedInspection.validTees);
+  validateCourseForSync(prunedCourse);
+
+  return {
+    applied: true,
+    course: prunedCourse,
+    specialImport: {
+      courseId: String(course.courseId || ''),
+      courseName: course.courseName || null,
+      strategy: override.strategy,
+      note: override.note || null,
+      triggerError: triggerErrorMessage,
+      originalTeeCount: resolvedInspection.audit.totalTeeCount,
+      keptTeeCount: resolvedInspection.audit.validTeeCount,
+      prunedTeeCount: resolvedInspection.audit.invalidTeeCount,
+      keptTees: resolvedInspection.audit.validTees,
+      prunedTees: resolvedInspection.audit.invalidTees
+    }
+  };
+}
+
+async function prepareCourseForBackfill(course, validateCourseForSync, context = {}) {
+  try {
+    validateCourseForSync(course);
+    return {
+      course,
+      specialImport: null
+    };
+  } catch (error) {
+    const inspection = inspectCourseComponentValidity(course, validateCourseForSync);
+    const override = getSpecialImportOverride(course?.courseId);
+    let specialImportResult = null;
+
+    if (override?.strategy === 'compose-nine-hole-combo') {
+      const client = context.client;
+      if (!client) {
+        throw error;
+      }
+
+      const frontCourse = await client.getCourse(String(override.frontCourseId));
+      const backCourse = await client.getCourse(String(override.backCourseId));
+      const composedCourse = composeNineHoleComboCourse(course, frontCourse, backCourse, override);
+      validateCourseForSync(composedCourse);
+
+      specialImportResult = {
+        applied: true,
+        course: composedCourse,
+        specialImport: {
+          courseId: String(course.courseId || ''),
+          courseName: course.courseName || null,
+          strategy: override.strategy,
+          note: override.note || null,
+          triggerError: error.message,
+          sourceComponentCourses: [String(override.frontCourseId), String(override.backCourseId)],
+          originalTeeCount: Array.isArray(course?.tees) ? course.tees.length : 0,
+          keptTeeCount: Array.isArray(composedCourse?.tees) ? composedCourse.tees.length : 0,
+          prunedTeeCount: 0,
+          keptTees: (composedCourse?.tees || []).map((tee) => summarizeTeeForAudit(tee, {
+            holeCount: Array.isArray(tee?.holes) ? tee.holes.length : 0,
+            teeSetSide: tee?.teeSetSide || 'All18'
+          })),
+          prunedTees: []
+        }
+      };
+    } else {
+      specialImportResult = tryPrepareSpecialImport(course, override, validateCourseForSync, error.message, inspection);
+    }
+
+    if (specialImportResult?.applied) {
+      return {
+        course: specialImportResult.course,
+        specialImport: specialImportResult.specialImport
+      };
+    }
+
+    error.componentAudit = specialImportResult?.componentAudit || inspection.audit;
+    error.failureBucket = classifyFailureBucket(error.message, error.componentAudit);
+    throw error;
+  }
+}
+
+function buildFailureBucketSummary(failures) {
+  const grouped = {};
+
+  for (const failure of failures || []) {
+    const bucket = failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit);
+    if (!grouped[bucket]) {
+      grouped[bucket] = {
+        count: 0,
+        courses: []
+      };
+    }
+
+    grouped[bucket].count += 1;
+    grouped[bucket].courses.push({
+      courseId: failure.courseId,
+      courseName: failure.courseName || null,
+      failureClass: failure.failureClass || null,
+      error: failure.error,
+      componentAudit: failure.componentAudit || null
+    });
+  }
+
+  return grouped;
+}
+
+function writeStateAudit(state, summary, args) {
+  const auditPath = path.join(STATE_AUDIT_DIR, `ghin-course-backfill-audit-${state}.json`);
+  const audit = {
+    generatedAt: new Date().toISOString(),
+    state,
+    mode: args.validateOnly ? 'validate-only' : args.dryRun ? 'dry-run' : 'backfill',
+    projectionMode: args.projectionMode,
+    totals: {
+      discovered: summary.discovered,
+      excluded: summary.excluded,
+      existing: summary.existing,
+      missing: summary.missing,
+      validated: summary.validated,
+      synced: summary.synced,
+      failed: summary.failed
+    },
+    failureBreakdown: summary.failureBreakdown,
+    failureBuckets: buildFailureBucketSummary(summary.failures),
+    specialImportsApplied: summary.specialImports
+  };
+
+  ensureParentDir(auditPath);
+  fs.writeFileSync(auditPath, JSON.stringify(audit, null, 2));
+  return auditPath;
+}
 
 function createFailureBreakdown() {
   return {
@@ -254,6 +794,7 @@ function classifyFailure(errorMessage) {
 function parseArgs(argv) {
   const args = {
     states: null,
+    excludeCourseIds: [],
     dryRun: false,
     validateOnly: false,
     searchConcurrency: 6,
@@ -292,6 +833,10 @@ function parseArgs(argv) {
           .split(',')
           .map((item) => normalizeStatePartition(item))
           .filter(Boolean);
+        break;
+      case '--exclude-course-ids':
+      case '--exclude-ids':
+        args.excludeCourseIds.push(...parseCourseIds(value));
         break;
       case '--search-concurrency':
         args.searchConcurrency = parsePositiveInt(value, args.searchConcurrency);
@@ -340,6 +885,8 @@ function parseArgs(argv) {
     throw new Error('Invalid --projection-mode value. Expected callback or none.');
   }
 
+  args.excludeCourseIds = Array.from(new Set(args.excludeCourseIds));
+
   return args;
 }
 
@@ -354,6 +901,15 @@ function normalizeStatePartition(value) {
   if (/^US-[A-Z]{2}$/.test(trimmed)) return trimmed;
   if (/^[A-Z]{2}$/.test(trimmed)) return `US-${trimmed}`;
   return null;
+}
+
+function parseCourseIds(value) {
+  return Array.from(new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+  ));
 }
 
 function ensureParentDir(filePath) {
@@ -439,6 +995,7 @@ function summarizeStateForConsole(summary) {
     validated: summary.validated,
     synced: summary.synced,
     failed: summary.failed,
+    specialImportsApplied: summary.specialImports.length,
     failureBreakdown: summary.failureBreakdown,
     orchestration: summarizeOrchestrationSummary(summary.orchestration),
     writeBreakdown: summarizeWriteBreakdown(summary.writeBreakdown)
@@ -467,18 +1024,23 @@ function applyResultToSummary(result, summary, runTotals, checkpoint) {
   }
 
   if (result.status === 'synced' || result.status === 'cache-updated') {
+    if (result.specialImport) {
+      summary.specialImports.push(result.specialImport);
+    }
     summary.synced += 1;
     checkpoint.totals.synced += 1;
     return;
   }
 
   const failureClass = classifyFailure(result.error);
+  const failureBucket = result.failureBucket || classifyFailureBucket(result.error, result.componentAudit);
   summary.failed += 1;
   summary.failureBreakdown[failureClass] += 1;
   checkpoint.totals.failureBreakdown[failureClass] += 1;
   summary.failures.push({
     ...result,
-    failureClass
+    failureClass,
+    failureBucket
   });
   checkpoint.totals.failed += 1;
 }
@@ -486,10 +1048,12 @@ function applyResultToSummary(result, summary, runTotals, checkpoint) {
 async function fetchAndValidateCourse(client, courseId, validateCourseForSync) {
   const courseStartedAtMs = Date.now();
   let fetchDurationMs = 0;
+  let validationDurationMs = 0;
+  let course = null;
 
   try {
     const fetchStartedAtMs = Date.now();
-    const course = await client.getCourse(courseId);
+    course = await client.getCourse(courseId);
     fetchDurationMs = Date.now() - fetchStartedAtMs;
 
     if (!course) {
@@ -497,13 +1061,15 @@ async function fetchAndValidateCourse(client, courseId, validateCourseForSync) {
     }
 
     const validationStartedAtMs = Date.now();
-    validateCourseForSync(course);
-    const validationDurationMs = Date.now() - validationStartedAtMs;
+    const prepared = await prepareCourseForBackfill(course, validateCourseForSync, { client });
+    validationDurationMs = Date.now() - validationStartedAtMs;
 
     return {
       courseId,
-      course,
+      courseName: prepared.course?.courseName || course.courseName || null,
+      course: prepared.course,
       status: 'validated',
+      specialImport: prepared.specialImport || null,
       timings: {
         fetchDurationMs,
         validationDurationMs,
@@ -517,11 +1083,14 @@ async function fetchAndValidateCourse(client, courseId, validateCourseForSync) {
   } catch (error) {
     return {
       courseId,
+      courseName: course?.courseName || null,
       status: 'failed',
       error: error.message,
+      failureBucket: error.failureBucket || classifyFailureBucket(error.message, error.componentAudit),
+      componentAudit: error.componentAudit || null,
       timings: {
         fetchDurationMs,
-        validationDurationMs: 0,
+        validationDurationMs,
         noopDetectionDurationMs: 0,
         upsertDurationMs: 0,
         mirrorDurationMs: 0,
@@ -548,7 +1117,9 @@ async function persistValidatedBatch(batch, bulkUpsertCoursesToCache) {
     return {
       results: batch.map((item) => ({
         courseId: item.courseId,
+        courseName: item.course?.courseName || null,
         status: 'cache-updated',
+        specialImport: item.specialImport || null,
         timings: {
           fetchDurationMs: item.timings.fetchDurationMs,
           validationDurationMs: item.timings.validationDurationMs,
@@ -567,8 +1138,12 @@ async function persistValidatedBatch(batch, bulkUpsertCoursesToCache) {
       return {
         results: [{
           courseId: item.courseId,
+          courseName: item.course?.courseName || null,
           status: 'failed',
           error: error.message,
+          specialImport: item.specialImport || null,
+          componentAudit: item.componentAudit || null,
+          failureBucket: classifyFailureBucket(error.message, item.componentAudit),
           timings: {
             fetchDurationMs: item.timings.fetchDurationMs,
             validationDurationMs: item.timings.validationDurationMs,
@@ -713,9 +1288,10 @@ async function run() {
     : allStates.filter((state) => !checkpoint.completedStates.includes(state));
   const runSummaries = {};
   const runTotals = createRunTotals();
+  const excludedCourseIdSet = new Set(args.excludeCourseIds);
 
   console.log(`Starting GHIN course backfill for ${pendingStates.length} US jurisdiction partition(s).`);
-  console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} validationChunkSize=${args.validationChunkSize} cacheBatchSize=${args.cacheBatchSize} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize}`);
+  console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} validationChunkSize=${args.validationChunkSize} cacheBatchSize=${args.cacheBatchSize} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize} excludeCourseIds=${args.excludeCourseIds.length} specialImportOverrides=${Object.keys(specialImportOverrides).length}`);
 
   await database.connect();
 
@@ -735,7 +1311,9 @@ async function run() {
   for (const stateResult of discoveryResults) {
     const { state, courses, discoveryDurationMs, stopReason, capped } = stateResult;
     const stateStartedAtMs = Date.now();
-    const courseIds = courses.map((course) => String(course.courseId)).filter(Boolean);
+    const rawCourseIds = courses.map((course) => String(course.courseId)).filter(Boolean);
+    const courseIds = rawCourseIds.filter((courseId) => !excludedCourseIdSet.has(courseId));
+    const excludedCount = rawCourseIds.length - courseIds.length;
     const existingIdsStartedAtMs = Date.now();
     const existingIds = await getExistingCourseIds(courseIds, args.dbBatchSize);
     const existingIdsDurationMs = Date.now() - existingIdsStartedAtMs;
@@ -743,6 +1321,7 @@ async function run() {
 
     const summary = {
       discovered: courseIds.length,
+      excluded: excludedCount,
       existing: existingIds.size,
       missing: missingIds.length,
       validated: 0,
@@ -755,6 +1334,9 @@ async function run() {
       orchestration: createOrchestrationSummary(),
       writeBreakdown: createWriteBreakdownSummary(),
       failures: []
+      ,
+      specialImports: [],
+      auditPath: null
     };
 
     recordTimingMetric(summary.orchestration.discoveryDurationMs, discoveryDurationMs);
@@ -768,6 +1350,7 @@ async function run() {
 
     console.log(
       `[plan] ${state}: discovered=${summary.discovered} existing=${summary.existing} missing=${summary.missing} ` +
+      (summary.excluded ? `excluded=${summary.excluded} ` : '') +
       `discover=${formatDuration(discoveryDurationMs)} existingDiff=${formatDuration(existingIdsDurationMs)}` +
       (summary.discoveryIncomplete ? ` warning=incomplete-discovery stop=${summary.discoveryStopReason}` : '')
     );
@@ -835,27 +1418,35 @@ async function run() {
           syncResults = await mapLimit(missingChunk, args.syncConcurrency, async (courseId) => {
           const courseStartedAtMs = Date.now();
           let fetchDurationMs = 0;
+          let validationDurationMs = 0;
+          let course = null;
 
           try {
             const fetchStartedAtMs = Date.now();
-            const course = await client.getCourse(courseId);
+            course = await client.getCourse(courseId);
             fetchDurationMs = Date.now() - fetchStartedAtMs;
 
             if (!course) {
               throw new Error('Course not found in GHIN detail endpoint');
             }
 
-            const syncResult = await processCourseSync(course, {
+            const validationStartedAtMs = Date.now();
+            const prepared = await prepareCourseForBackfill(course, validateCourseForSync, { client });
+            validationDurationMs = Date.now() - validationStartedAtMs;
+
+            const syncResult = await processCourseSync(prepared.course, {
               detectNoop: false,
               syncMirror: true
             });
 
             return {
               courseId,
+              courseName: prepared.course?.courseName || course.courseName || null,
               status: 'synced',
+              specialImport: prepared.specialImport || null,
               timings: {
                 fetchDurationMs,
-                validationDurationMs: Number(syncResult.timings?.validationDurationMs || 0),
+                validationDurationMs: Math.max(validationDurationMs, Number(syncResult.timings?.validationDurationMs || 0)),
                 noopDetectionDurationMs: Number(syncResult.timings?.noopDetectionDurationMs || 0),
                 upsertDurationMs: Number(syncResult.timings?.upsertDurationMs || 0),
                 mirrorDurationMs: Number(syncResult.timings?.mirrorDurationMs || 0),
@@ -866,11 +1457,14 @@ async function run() {
           } catch (error) {
             return {
               courseId,
+              courseName: course?.courseName || null,
               status: 'failed',
               error: error.message,
+              componentAudit: error.componentAudit || null,
+              failureBucket: error.failureBucket || classifyFailureBucket(error.message, error.componentAudit),
               timings: {
                 fetchDurationMs,
-                validationDurationMs: Number(error.syncTimings?.validationDurationMs || 0),
+                validationDurationMs: Math.max(validationDurationMs, Number(error.syncTimings?.validationDurationMs || 0)),
                 noopDetectionDurationMs: Number(error.syncTimings?.noopDetectionDurationMs || 0),
                 upsertDurationMs: Number(error.syncTimings?.upsertDurationMs || 0),
                 mirrorDurationMs: Number(error.syncTimings?.mirrorDurationMs || 0),
@@ -936,6 +1530,8 @@ async function run() {
       delete checkpoint.failedStates[state];
     }
 
+    summary.auditPath = writeStateAudit(state, summary, args);
+
     if (!args.validateOnly) {
       checkpoint.completedStates.push(state);
       const checkpointSaveStartedAtMs = Date.now();
@@ -951,9 +1547,11 @@ async function run() {
 
     console.log(
       `[done] ${state}: validated=${summary.validated} synced=${summary.synced} failed=${summary.failed} ` +
+      `specialImports=${summary.specialImports.length} ` +
       `(retryable=${summary.failureBreakdown.retryableOperational}, sourceData=${summary.failureBreakdown.sourceData}, other=${summary.failureBreakdown.other}) ` +
       `stateTotal=${formatDuration(stateTotalDurationMs)} flushWait=${formatDuration(summary.orchestration.validationToFlushWaitDurationMs.totalMs)} checkpointSave=${formatDuration(summary.orchestration.checkpointSaveDurationMs.totalMs)}` +
-      (summary.discoveryIncomplete ? ` discovery=incomplete(${summary.discoveryStopReason})` : '')
+      (summary.discoveryIncomplete ? ` discovery=incomplete(${summary.discoveryStopReason})` : '') +
+      ` audit=${summary.auditPath}`
     );
   }
 
