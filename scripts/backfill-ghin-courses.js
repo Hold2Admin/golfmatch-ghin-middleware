@@ -16,6 +16,9 @@
  *   node scripts/backfill-ghin-courses.js --states=US-VT --sync-concurrency=16 --cache-write-concurrency=4 --projection-mode=none
  *   node scripts/backfill-ghin-courses.js --states=US-NY --projection-mode=none
  *   node scripts/backfill-ghin-courses.js --states=US-CT --validate-only
+ *   node scripts/backfill-ghin-courses.js --projection-mode=none --delta-check
+ *   node scripts/backfill-ghin-courses.js --states=US-CT,US-RI --projection-mode=none --delta-check
+ *   node scripts/backfill-ghin-courses.js --projection-mode=none --ignore-checkpoint --no-checkpoint-write
  *   node scripts/backfill-ghin-courses.js --dry-run --search-concurrency=8
  *   node scripts/backfill-ghin-courses.js --reset-checkpoint
  *   node scripts/backfill-ghin-courses.js --states=US-NY --projection-mode=none --exclude-course-ids=3857
@@ -152,7 +155,7 @@ function analyzeInvalidTeeFailure(teeAudit) {
     };
   }
 
-  if (reason.includes('invalid holeNumber') || reason.includes('could not be normalized to 9 holes')) {
+  if (reason.includes('invalid holeNumber') || reason.includes('duplicate holeNumber') || reason.includes('could not be normalized to 9 holes')) {
     return {
       shape: 'malformed_tee_structure',
       holeCount,
@@ -268,6 +271,10 @@ function classifyFailureBucket(errorMessage, componentAudit = null) {
 
   const message = String(errorMessage || '');
 
+  if (message.includes('missing required field: tees[]')) {
+    return 'irreconcilable_missing_tees_payload';
+  }
+
   if (message.includes('missing hole handicap/allocation data')) {
     return 'irreconcilable_missing_handicap';
   }
@@ -280,7 +287,7 @@ function classifyFailureBucket(errorMessage, componentAudit = null) {
     return 'irreconcilable_invalid_par';
   }
 
-  if (message.includes('invalid holeNumber')) {
+  if (message.includes('invalid holeNumber') || message.includes('duplicate holeNumber')) {
     return 'irreconcilable_invalid_hole_number';
   }
 
@@ -343,6 +350,78 @@ function normalizeFrontNineOnlyCourse(course) {
   return cloneCourse(course, transformedTees);
 }
 
+function holesMatchForDeterministicDedup(left, right) {
+  return Number(left?.holeNumber) === Number(right?.holeNumber)
+    && Number(left?.par) === Number(right?.par)
+    && Number(left?.yardage ?? -1) === Number(right?.yardage ?? -1)
+    && Number(left?.handicap ?? -1) === Number(right?.handicap ?? -1);
+}
+
+function tryNormalizeDuplicateHoleRowsCourse(course) {
+  let normalizedAnyTee = false;
+  const transformedTees = [];
+  const normalizedTees = [];
+
+  for (const tee of course?.tees || []) {
+    const teeClone = cloneTee(tee);
+    const holes = Array.isArray(teeClone?.holes) ? teeClone.holes.map(cloneHole) : [];
+    const holesByNumber = new Map();
+
+    for (const hole of holes) {
+      const holeNumber = Number(hole?.holeNumber);
+      if (!holesByNumber.has(holeNumber)) {
+        holesByNumber.set(holeNumber, []);
+      }
+      holesByNumber.get(holeNumber).push(hole);
+    }
+
+    const duplicateEntries = Array.from(holesByNumber.entries()).filter(([, grouped]) => grouped.length > 1);
+    if (!duplicateEntries.length) {
+      transformedTees.push(teeClone);
+      continue;
+    }
+
+    const allHoleNumbersPresentTwice = holes.length === 36
+      && holesByNumber.size === 18
+      && Array.from({ length: 18 }, (_, index) => index + 1).every((holeNumber) => (holesByNumber.get(holeNumber) || []).length === 2);
+
+    const duplicatesAreIdentical = allHoleNumbersPresentTwice
+      && duplicateEntries.every(([, grouped]) => holesMatchForDeterministicDedup(grouped[0], grouped[1]));
+
+    if (!duplicatesAreIdentical) {
+      return null;
+    }
+
+    normalizedAnyTee = true;
+    const normalizedHoles = Array.from({ length: 18 }, (_, index) => cloneHole(holesByNumber.get(index + 1)[0]));
+    transformedTees.push({
+      ...teeClone,
+      holes: normalizedHoles
+    });
+    normalizedTees.push(summarizeTeeForAudit(teeClone, {
+      holeCount: holes.length,
+      normalizedHoleCount: normalizedHoles.length
+    }));
+  }
+
+  if (!normalizedAnyTee) {
+    return null;
+  }
+
+  return {
+    course: cloneCourse(course, transformedTees),
+    specialImport: {
+      courseId: String(course?.courseId || ''),
+      courseName: course?.courseName || null,
+      strategy: 'auto-dedupe-duplicate-hole-rows',
+      note: 'Collapsed deterministic duplicate hole rows for tees where GHIN published each hole twice with identical values.',
+      manualValidationRequired: true,
+      validationStatus: 'pending-manual-validation',
+      normalizedTees
+    }
+  };
+}
+
 function normalizeRawGender(rawGender) {
   const normalized = String(rawGender || '').trim().toUpperCase();
   return normalized === 'W' || normalized === 'F' ? 'F' : 'M';
@@ -397,6 +476,96 @@ function getSpecialImportOverride(courseId) {
   return specialImportOverrides[String(courseId)] || null;
 }
 
+function normalizePruneSegmentKey(tee) {
+  return [
+    normalizeRawGender(tee?.gender),
+    String(tee?.teeSetSide || 'All18').trim().toUpperCase(),
+    String(Number(tee?.holeCount || 0))
+  ].join('::');
+}
+
+function evaluateAutomaticPruneReview(audit) {
+  if (!audit?.pruneCandidate) {
+    return {
+      secondPassEligible: false,
+      secondPassAttempted: false,
+      notAutoPrunedReason: 'not-prune-candidate'
+    };
+  }
+
+  if (audit.validTeeCount < 1) {
+    return {
+      secondPassEligible: false,
+      secondPassAttempted: false,
+      notAutoPrunedReason: 'no-valid-tees'
+    };
+  }
+
+  if (audit.invalidTeeCount !== 1) {
+    return {
+      secondPassEligible: false,
+      secondPassAttempted: false,
+      notAutoPrunedReason: 'multiple-invalid-tees'
+    };
+  }
+
+  const invalidTee = Array.isArray(audit.invalidTees) ? audit.invalidTees[0] : null;
+  const validTees = Array.isArray(audit.validTees) ? audit.validTees : [];
+  const invalidSegmentKey = normalizePruneSegmentKey(invalidTee);
+  const matchingValidSegmentExists = validTees.some((tee) => normalizePruneSegmentKey(tee) === invalidSegmentKey);
+
+  if (!matchingValidSegmentExists) {
+    return {
+      secondPassEligible: false,
+      secondPassAttempted: false,
+      notAutoPrunedReason: 'no-matching-valid-segment'
+    };
+  }
+
+  return {
+    secondPassEligible: true,
+    secondPassAttempted: true,
+    notAutoPrunedReason: null
+  };
+}
+
+function tryPrepareAutomaticPruneImport(course, validateCourseForSync, triggerErrorMessage, inspection = null) {
+  const resolvedInspection = inspection || inspectCourseComponentValidity(course, validateCourseForSync);
+  const audit = resolvedInspection.audit;
+  const pruneReview = evaluateAutomaticPruneReview(audit);
+
+  if (!pruneReview.secondPassEligible) {
+    return {
+      applied: false,
+      componentAudit: audit,
+      pruneReview
+    };
+  }
+
+  const prunedCourse = cloneCourse(course, resolvedInspection.validTees);
+  validateCourseForSync(prunedCourse);
+
+  return {
+    applied: true,
+    course: prunedCourse,
+    specialImport: {
+      courseId: String(course.courseId || ''),
+      courseName: course.courseName || null,
+      strategy: 'auto-drop-invalid-tees',
+      note: 'Automatically pruned one invalid tee after component bucketing because a same gender/side/hole-count valid segment remains.',
+      triggerError: triggerErrorMessage,
+      manualValidationRequired: true,
+      validationStatus: 'pending-manual-validation',
+      originalTeeCount: audit.totalTeeCount,
+      keptTeeCount: audit.validTeeCount,
+      prunedTeeCount: audit.invalidTeeCount,
+      keptTees: audit.validTees,
+      prunedTees: audit.invalidTees,
+      pruneReview
+    }
+  };
+}
+
 function tryPrepareSpecialImport(course, override, validateCourseForSync, triggerErrorMessage, inspection = null) {
   if (!override) {
     return null;
@@ -415,6 +584,8 @@ function tryPrepareSpecialImport(course, override, validateCourseForSync, trigge
         strategy: override.strategy,
         note: override.note || null,
         triggerError: triggerErrorMessage,
+        manualValidationRequired: false,
+        validationStatus: null,
         originalTeeCount: Array.isArray(course?.tees) ? course.tees.length : 0,
         keptTeeCount: Array.isArray(transformedCourse?.tees) ? transformedCourse.tees.length : 0,
         prunedTeeCount: 0,
@@ -455,6 +626,8 @@ function tryPrepareSpecialImport(course, override, validateCourseForSync, trigge
       strategy: override.strategy,
       note: override.note || null,
       triggerError: triggerErrorMessage,
+      manualValidationRequired: true,
+      validationStatus: 'pending-manual-validation',
       originalTeeCount: resolvedInspection.audit.totalTeeCount,
       keptTeeCount: resolvedInspection.audit.validTeeCount,
       prunedTeeCount: resolvedInspection.audit.invalidTeeCount,
@@ -465,6 +638,15 @@ function tryPrepareSpecialImport(course, override, validateCourseForSync, trigge
 }
 
 async function prepareCourseForBackfill(course, validateCourseForSync, context = {}) {
+  const duplicateHoleNormalization = tryNormalizeDuplicateHoleRowsCourse(course);
+  if (duplicateHoleNormalization) {
+    validateCourseForSync(duplicateHoleNormalization.course);
+    return {
+      course: duplicateHoleNormalization.course,
+      specialImport: duplicateHoleNormalization.specialImport
+    };
+  }
+
   try {
     validateCourseForSync(course);
     return {
@@ -511,6 +693,10 @@ async function prepareCourseForBackfill(course, validateCourseForSync, context =
       specialImportResult = tryPrepareSpecialImport(course, override, validateCourseForSync, error.message, inspection);
     }
 
+    if (!specialImportResult?.applied && !override) {
+      specialImportResult = tryPrepareAutomaticPruneImport(course, validateCourseForSync, error.message, inspection);
+    }
+
     if (specialImportResult?.applied) {
       return {
         course: specialImportResult.course,
@@ -519,6 +705,7 @@ async function prepareCourseForBackfill(course, validateCourseForSync, context =
     }
 
     error.componentAudit = specialImportResult?.componentAudit || inspection.audit;
+    error.pruneReview = specialImportResult?.pruneReview || evaluateAutomaticPruneReview(error.componentAudit);
     error.failureBucket = classifyFailureBucket(error.message, error.componentAudit);
     throw error;
   }
@@ -549,6 +736,168 @@ function buildFailureBucketSummary(failures) {
   return grouped;
 }
 
+function isPruneSpecialImport(specialImport) {
+  const strategy = String(specialImport?.strategy || '').trim().toLowerCase();
+  return strategy === 'drop-invalid-tees' || strategy === 'auto-drop-invalid-tees';
+}
+
+function summarizePruneSpecialImport(specialImport) {
+  return {
+    courseId: specialImport.courseId,
+    courseName: specialImport.courseName || null,
+    reviewStatus: 'imported-after-prune',
+    pruneMode: specialImport.strategy === 'auto-drop-invalid-tees' ? 'automatic-second-pass' : 'explicit-override',
+    manualValidationRequired: specialImport.manualValidationRequired !== false,
+    validationStatus: specialImport.validationStatus || 'pending-manual-validation',
+    strategy: specialImport.strategy || null,
+    note: specialImport.note || null,
+    triggerError: specialImport.triggerError || null,
+    originalTeeCount: Number(specialImport.originalTeeCount || 0),
+    keptTeeCount: Number(specialImport.keptTeeCount || 0),
+    prunedTeeCount: Number(specialImport.prunedTeeCount || 0),
+    keptTees: Array.isArray(specialImport.keptTees) ? specialImport.keptTees : [],
+    prunedTees: Array.isArray(specialImport.prunedTees) ? specialImport.prunedTees : []
+  };
+}
+
+function summarizeRejectedPruneCandidate(failure) {
+  const pruneReview = failure.pruneReview || evaluateAutomaticPruneReview(failure.componentAudit);
+  return {
+    courseId: failure.courseId,
+    courseName: failure.courseName || null,
+    reviewStatus: 'not-imported-after-prune-review',
+    manualReviewRequired: true,
+    reimportStatus: 'pending-manual-review',
+    secondPassEligible: Boolean(pruneReview.secondPassEligible),
+    secondPassAttempted: Boolean(pruneReview.secondPassAttempted),
+    notAutoPrunedReason: pruneReview.notAutoPrunedReason || null,
+    failureClass: failure.failureClass || null,
+    failureBucket: failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit),
+    error: failure.error || null,
+    componentAudit: failure.componentAudit || null
+  };
+}
+
+function buildPruneReviewSummary(summary) {
+  const importedAfterPrune = (summary?.specialImports || [])
+    .filter(isPruneSpecialImport)
+    .map(summarizePruneSpecialImport);
+
+  const notImportedAfterPruneReview = (summary?.failures || [])
+    .filter((failure) => (failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit)) === 'repairable_partial_component_prune_candidate')
+    .map(summarizeRejectedPruneCandidate);
+
+  const notImportedReasonCounts = notImportedAfterPruneReview.reduce((accumulator, course) => {
+    const key = course.notAutoPrunedReason || 'unknown';
+    accumulator[key] = Number(accumulator[key] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  return {
+    importedAfterPruneCount: importedAfterPrune.length,
+    notImportedAfterPruneReviewCount: notImportedAfterPruneReview.length,
+    pendingManualValidationCount: importedAfterPrune.filter((course) => course.manualValidationRequired).length,
+    pendingManualReviewCount: notImportedAfterPruneReview.filter((course) => course.manualReviewRequired).length,
+    notImportedReasonCounts,
+    importedAfterPrune,
+    notImportedAfterPruneReview
+  };
+}
+
+function isIrrecoverableFailureBucket(bucket) {
+  return String(bucket || '').startsWith('irreconcilable_');
+}
+
+function isManualReviewFailureBucket(bucket) {
+  return bucket === 'repairable_partial_component_prune_candidate'
+    || bucket === 'review_front_nine_only_normalization_candidate'
+    || bucket === 'review_back_nine_only_normalization_candidate';
+}
+
+function summarizeManualValidationItem(specialImport) {
+  return {
+    courseId: specialImport.courseId,
+    courseName: specialImport.courseName || null,
+    actionType: 'manual-validation',
+    strategy: specialImport.strategy || null,
+    validationStatus: specialImport.validationStatus || null,
+    note: specialImport.note || null,
+    triggerError: specialImport.triggerError || null
+  };
+}
+
+function summarizeManualReviewItem(failure) {
+  const bucket = failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit);
+  let recommendedAction = 'manual-review';
+
+  if (bucket === 'repairable_partial_component_prune_candidate') {
+    recommendedAction = 'evaluate-explicit-prune-override';
+  } else if (bucket === 'review_front_nine_only_normalization_candidate') {
+    recommendedAction = 'evaluate-front-nine-normalization';
+  } else if (bucket === 'review_back_nine_only_normalization_candidate') {
+    recommendedAction = 'evaluate-back-nine-normalization';
+  }
+
+  return {
+    courseId: failure.courseId,
+    courseName: failure.courseName || null,
+    actionType: 'manual-review',
+    recommendedAction,
+    failureBucket: bucket,
+    failureClass: failure.failureClass || null,
+    error: failure.error || null,
+    componentAudit: failure.componentAudit || null
+  };
+}
+
+function buildManualActionQueue(summary) {
+  const pendingManualValidation = (summary?.specialImports || [])
+    .filter((specialImport) => specialImport?.manualValidationRequired)
+    .map(summarizeManualValidationItem);
+
+  const pendingManualReview = (summary?.failures || [])
+    .filter((failure) => isManualReviewFailureBucket(failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit)))
+    .map(summarizeManualReviewItem);
+
+  return {
+    pendingManualValidationCount: pendingManualValidation.length,
+    pendingManualReviewCount: pendingManualReview.length,
+    pendingManualValidation,
+    pendingManualReview
+  };
+}
+
+function summarizeIrrecoverableFailure(failure) {
+  const bucket = failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit);
+  return {
+    courseId: failure.courseId,
+    courseName: failure.courseName || null,
+    failureBucket: bucket,
+    failureClass: failure.failureClass || null,
+    error: failure.error || null,
+    componentAudit: failure.componentAudit || null,
+    manualActionRequired: false
+  };
+}
+
+function buildIrrecoverableFailureSummary(summary) {
+  const irrecoverableFailures = (summary?.failures || [])
+    .filter((failure) => isIrrecoverableFailureBucket(failure.failureBucket || classifyFailureBucket(failure.error, failure.componentAudit)))
+    .map(summarizeIrrecoverableFailure);
+
+  const byBucket = irrecoverableFailures.reduce((accumulator, failure) => {
+    const key = failure.failureBucket || 'unknown';
+    accumulator[key] = Number(accumulator[key] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  return {
+    totalCount: irrecoverableFailures.length,
+    byBucket,
+    courses: irrecoverableFailures
+  };
+}
+
 function writeStateAudit(state, summary, args) {
   const auditPath = path.join(STATE_AUDIT_DIR, `ghin-course-backfill-audit-${state}.json`);
   const audit = {
@@ -567,6 +916,9 @@ function writeStateAudit(state, summary, args) {
     },
     failureBreakdown: summary.failureBreakdown,
     failureBuckets: buildFailureBucketSummary(summary.failures),
+    manualActionQueue: buildManualActionQueue(summary),
+    irrecoverableFailures: buildIrrecoverableFailureSummary(summary),
+    pruneReview: buildPruneReviewSummary(summary),
     specialImportsApplied: summary.specialImports
   };
 
@@ -748,6 +1100,12 @@ function createEmptyCheckpoint() {
   };
 }
 
+function addCompletedState(checkpoint, state) {
+  if (!checkpoint.completedStates.includes(state)) {
+    checkpoint.completedStates.push(state);
+  }
+}
+
 function hydrateCheckpoint(checkpoint) {
   const next = checkpoint && typeof checkpoint === 'object' ? checkpoint : createEmptyCheckpoint();
   next.completedStates = Array.isArray(next.completedStates) ? next.completedStates : [];
@@ -769,8 +1127,10 @@ function hydrateCheckpoint(checkpoint) {
 function classifyFailure(errorMessage) {
   const message = String(errorMessage || '');
   if (
-    message.includes('missing hole handicap/allocation data')
+    message.includes('missing required field: tees[]')
+    || message.includes('missing hole handicap/allocation data')
     || message.includes('missing holes[]')
+    || message.includes('duplicate holeNumber')
     || message.includes('invalid par')
     || message.includes('invalid holeNumber')
     || message.includes('CK_GHIN_Holes_Par')
@@ -797,6 +1157,9 @@ function parseArgs(argv) {
     excludeCourseIds: [],
     dryRun: false,
     validateOnly: false,
+    deltaCheck: false,
+    ignoreCheckpoint: false,
+    noCheckpointWrite: false,
     searchConcurrency: 6,
     syncConcurrency: 8,
     cacheWriteConcurrency: 4,
@@ -817,6 +1180,18 @@ function parseArgs(argv) {
     }
     if (raw === '--validate-only' || raw === '--preflight-only') {
       args.validateOnly = true;
+      continue;
+    }
+    if (raw === '--delta-check') {
+      args.deltaCheck = true;
+      continue;
+    }
+    if (raw === '--ignore-checkpoint') {
+      args.ignoreCheckpoint = true;
+      continue;
+    }
+    if (raw === '--no-checkpoint-write') {
+      args.noCheckpointWrite = true;
       continue;
     }
     if (raw === '--reset-checkpoint') {
@@ -879,6 +1254,11 @@ function parseArgs(argv) {
 
   if (args.dryRun && args.validateOnly) {
     throw new Error('Choose either --dry-run or --validate-only, not both.');
+  }
+
+  if (args.deltaCheck) {
+    args.ignoreCheckpoint = true;
+    args.noCheckpointWrite = true;
   }
 
   if (!['callback', 'none'].includes(args.projectionMode)) {
@@ -1285,13 +1665,15 @@ async function run() {
 
   const pendingStates = args.validateOnly
     ? allStates
-    : allStates.filter((state) => !checkpoint.completedStates.includes(state));
+    : args.ignoreCheckpoint
+      ? allStates
+      : allStates.filter((state) => !checkpoint.completedStates.includes(state));
   const runSummaries = {};
   const runTotals = createRunTotals();
   const excludedCourseIdSet = new Set(args.excludeCourseIds);
 
   console.log(`Starting GHIN course backfill for ${pendingStates.length} US jurisdiction partition(s).`);
-  console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} validationChunkSize=${args.validationChunkSize} cacheBatchSize=${args.cacheBatchSize} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize} excludeCourseIds=${args.excludeCourseIds.length} specialImportOverrides=${Object.keys(specialImportOverrides).length}`);
+  console.log(`Options: dryRun=${args.dryRun} validateOnly=${args.validateOnly} deltaCheck=${args.deltaCheck} ignoreCheckpoint=${args.ignoreCheckpoint} noCheckpointWrite=${args.noCheckpointWrite} projectionMode=${args.projectionMode} searchConcurrency=${args.searchConcurrency} syncConcurrency=${args.syncConcurrency} cacheWriteConcurrency=${args.cacheWriteConcurrency} validationChunkSize=${args.validationChunkSize} cacheBatchSize=${args.cacheBatchSize} mirrorConcurrency=${args.mirrorConcurrency} dbBatchSize=${args.dbBatchSize} pageSize=${args.pageSize} excludeCourseIds=${args.excludeCourseIds.length} specialImportOverrides=${Object.keys(specialImportOverrides).length}`);
 
   await database.connect();
 
@@ -1532,8 +1914,8 @@ async function run() {
 
     summary.auditPath = writeStateAudit(state, summary, args);
 
-    if (!args.validateOnly) {
-      checkpoint.completedStates.push(state);
+    if (!args.validateOnly && !args.noCheckpointWrite) {
+      addCompletedState(checkpoint, state);
       const checkpointSaveStartedAtMs = Date.now();
       saveCheckpoint(args.checkpointPath, checkpoint);
       const checkpointSaveDurationMs = Date.now() - checkpointSaveStartedAtMs;
@@ -1555,7 +1937,7 @@ async function run() {
     );
   }
 
-  if (!args.validateOnly) {
+  if (!args.validateOnly && !args.noCheckpointWrite) {
     const checkpointSaveStartedAtMs = Date.now();
     saveCheckpoint(args.checkpointPath, checkpoint);
     const checkpointSaveDurationMs = Date.now() - checkpointSaveStartedAtMs;
@@ -1564,9 +1946,9 @@ async function run() {
   await database.close();
 
   console.log(`[elapsed] total=${formatDuration(Date.now() - runStartedAtMs)}`);
-  console.log(args.validateOnly ? 'GHIN course preflight validation complete.' : 'GHIN course backfill complete.');
+  console.log(args.validateOnly ? 'GHIN course preflight validation complete.' : args.deltaCheck ? 'GHIN course delta check complete.' : 'GHIN course backfill complete.');
   console.log(JSON.stringify({
-    mode: args.validateOnly ? 'validate-only' : args.dryRun ? 'dry-run' : 'backfill',
+    mode: args.validateOnly ? 'validate-only' : args.dryRun ? 'dry-run' : args.deltaCheck ? 'delta-check' : 'backfill',
     projectionMode: args.projectionMode,
     totalElapsedMs: Date.now() - runStartedAtMs,
     totalElapsedSeconds: Number(((Date.now() - runStartedAtMs) / 1000).toFixed(1)),

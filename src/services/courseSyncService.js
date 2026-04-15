@@ -865,6 +865,7 @@ function validateCourseMirrorShape(course) {
     const teeId = String(tee?.teeId || '').trim();
     const teeName = String(tee?.teeName || '').trim();
     const holes = Array.isArray(tee?.holes) ? tee.holes : [];
+    const seenHoleNumbers = new Set();
 
     if (!teeId) {
       throw new Error(`Course ${courseId} tees[${teeIndex}] missing ghinTeeId`);
@@ -889,6 +890,12 @@ function validateCourseMirrorShape(course) {
       if (holeNumber < 1 || holeNumber > 18) {
         throw new Error(`Course ${courseId} tees[${teeIndex}].holes[${holeIndex}] has invalid holeNumber ${holeNumber}`);
       }
+
+      if (seenHoleNumbers.has(holeNumber)) {
+        throw new Error(`Course ${courseId} tees[${teeIndex}] has duplicate holeNumber ${holeNumber}`);
+      }
+
+      seenHoleNumbers.add(holeNumber);
 
       if (par < 2 || par > 7) {
         throw new Error(`Course ${courseId} tees[${teeIndex}].holes[${holeIndex}] has invalid par ${par}`);
