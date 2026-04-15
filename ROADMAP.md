@@ -1,7 +1,7 @@
 # GolfMatch GHIN Middleware — Roadmap
 
-**Last Updated:** April 10, 2026  
-**Status:** Runtime read-path cutover, webhook/reconciliation automation, score posting/readback, staging webhook ingress, and inbox-driven GPA approval are validated. The active middleware priority is staging-readiness support and evidence capture; stage 1 CacheDB writer redesign is deferred future scaling work rather than the current gate.
+**Last Updated:** April 14, 2026  
+**Status:** Runtime read-path cutover, webhook/reconciliation automation, score posting/readback, staging webhook ingress, and inbox-driven GPA approval are validated. Unknown-coverage catalog fill now has an explicit all-states delta-check execution path, while stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
 
 ---
 
@@ -46,8 +46,10 @@
 - [x] Remove remaining middleware runtime-read dependencies for course/tee/hole serving
 - [x] Prove mirror-first reads use `GhinRuntime*` tables end-to-end
 - [x] Add state-partition course discovery/backfill for unknown GHIN catalog coverage
+- [x] Add all-states `--delta-check` mode for unknown-coverage catalog fill without checkpoint mutation
 - [x] Validate split pipeline: stage 1 GHIN -> CacheDB, stage 2 CacheDB -> GolfDB
 - [x] Implement and prove CacheDB -> GolfDB bulk projector on real state runs
+- [x] Prove large-state staging imports beyond the earlier 999-course concern and separate audit handoff into `manualActionQueue` vs `irrecoverableFailures`
 - [x] Prove normalized score posting via `/api/v1/scores/post`
 - [x] Prove normalized score readback via `/api/v1/scores/search` and `/api/v1/scores/:scoreId`
 - [x] Prove staging webhook ingress after App Service third-party access enablement

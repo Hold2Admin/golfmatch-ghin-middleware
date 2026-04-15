@@ -145,7 +145,8 @@ function formatPercent(completed, total) {
 function createProjectionPhaseTimings() {
   return {
     buildPayloadMs: 0,
-    courseMergeMs: 0,
+    stageLoadMs: 0,
+    courseWriteMs: 0,
     holeDeleteMs: 0,
     teeDeleteMs: 0,
     teeInsertMs: 0,
@@ -173,7 +174,8 @@ function formatProjectionPhaseTimings(phaseTimings) {
 
   return [
     `buildPayload=${formatDurationMs(phaseTimings.buildPayloadMs)}`,
-    `courseMerge=${formatDurationMs(phaseTimings.courseMergeMs)}`,
+    `stageLoad=${formatDurationMs(phaseTimings.stageLoadMs)}`,
+    `courseWrite=${formatDurationMs(phaseTimings.courseWriteMs)}`,
     `holeDelete=${formatDurationMs(phaseTimings.holeDeleteMs)}`,
     `teeDelete=${formatDurationMs(phaseTimings.teeDeleteMs)}`,
     `teeInsert=${formatDurationMs(phaseTimings.teeInsertMs)}`,
@@ -354,6 +356,50 @@ async function getCandidateCourseIds(args) {
   );
 
   return rows.map((row) => String(row.courseId)).filter(Boolean).filter((courseId) => !excludedSet.has(courseId));
+}
+
+async function loadCacheProjectionHeaders(courseIds) {
+  if (!courseIds.length) {
+    return { courseHeaders: [], invalidCourses: [] };
+  }
+
+  const dbSql = database.sql;
+  const rows = await database.query(
+    `SELECT
+        CourseId AS courseId,
+        CourseName AS courseName,
+        State AS state,
+        LastPayloadHash AS lastPayloadHash,
+        UpdatedAt AS updatedAt
+     FROM dbo.GHIN_Courses
+     WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+    {
+      idsJson: { type: dbSql.NVarChar(dbSql.MAX), value: JSON.stringify(courseIds) }
+    }
+  );
+
+  const headerMap = new Map((rows || []).map((row) => [String(row.courseId), {
+    courseId: String(row.courseId),
+    courseName: row.courseName || null,
+    state: row.state || null,
+    lastPayloadHash: row.lastPayloadHash ? String(row.lastPayloadHash) : null,
+    updatedAt: row.updatedAt instanceof Date ? row.updatedAt : (row.updatedAt ? new Date(row.updatedAt) : null)
+  }]));
+
+  const courseHeaders = [];
+  const invalidCourses = [];
+
+  for (const courseId of courseIds) {
+    const header = headerMap.get(String(courseId));
+    if (!header) {
+      invalidCourses.push({ courseId: String(courseId), error: 'Course not found in cache' });
+      continue;
+    }
+
+    courseHeaders.push(header);
+  }
+
+  return { courseHeaders, invalidCourses };
 }
 
 async function loadCacheProjectionData(courseIds) {
@@ -551,13 +597,16 @@ async function getGolfPayloadHashes(pool, courseIds) {
   const rows = await pool.request()
     .input('idsJson', sql.NVarChar(sql.MAX), JSON.stringify(courseIds))
     .query(`
-      SELECT GhinCourseId AS courseId, PayloadHash
+      SELECT GhinCourseId AS courseId, PayloadHash, LastSyncedAt
       FROM dbo.GhinRuntimeCourses
       WHERE GhinCourseId IN (SELECT [value] FROM OPENJSON(@idsJson))
     `);
 
   return new Map(
-    (rows.recordset || []).map((row) => [String(row.courseId), row.PayloadHash ? String(row.PayloadHash) : null])
+    (rows.recordset || []).map((row) => [String(row.courseId), {
+      payloadHash: row.PayloadHash ? String(row.PayloadHash) : null,
+      lastSyncedAt: row.LastSyncedAt instanceof Date ? row.LastSyncedAt : (row.LastSyncedAt ? new Date(row.LastSyncedAt) : null)
+    }])
   );
 }
 
@@ -571,7 +620,43 @@ function filterProjectionData(data, targetIds) {
   };
 }
 
-async function applyProjectionBatch(pool, data) {
+async function writeProjectionData(pool, data, writer, summary) {
+  const phaseTimings = createProjectionPhaseTimings();
+  if (!data.coursePayloads.length) {
+    return { phaseTimings, usedFallback: false, projected: 0 };
+  }
+
+  const courseIds = data.coursePayloads.map((course) => String(course.ghinCourseId));
+
+  try {
+    const batchProjection = await writer(pool, data);
+    addProjectionPhaseTimings(phaseTimings, batchProjection.phaseTimings);
+    return { phaseTimings, usedFallback: false, projected: data.coursePayloads.length };
+  } catch (batchError) {
+    if (courseIds.length === 1) {
+      summary.failed += 1;
+      summary.failures.push({ courseId: courseIds[0], error: batchError.message });
+      return { phaseTimings, usedFallback: true, projected: 0 };
+    }
+
+    let projected = 0;
+    for (const courseId of courseIds) {
+      const singleData = filterProjectionData(data, [courseId]);
+      try {
+        const singleProjection = await writer(pool, singleData);
+        addProjectionPhaseTimings(phaseTimings, singleProjection.phaseTimings);
+        projected += 1;
+      } catch (singleError) {
+        summary.failed += 1;
+        summary.failures.push({ courseId, error: singleError.message });
+      }
+    }
+
+    return { phaseTimings, usedFallback: true, projected };
+  }
+}
+
+async function applyProjectionReplaceBatch(pool, data) {
   if (!data.coursePayloads.length) {
     return { phaseTimings: createProjectionPhaseTimings() };
   }
@@ -587,7 +672,7 @@ async function applyProjectionBatch(pool, data) {
     const holesJson = JSON.stringify(data.holesPayload);
     phaseTimings.buildPayloadMs = Date.now() - payloadBuildStartedAtMs;
 
-    const courseMergeStartedAtMs = Date.now();
+    const courseWriteStartedAtMs = Date.now();
     await new sql.Request(tx)
       .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
       .query(`
@@ -626,7 +711,7 @@ async function applyProjectionBatch(pool, data) {
           INSERT (GhinCourseId, FacilityId, FacilityName, CourseName, ShortCourseName, City, State, Country, PayloadHash, SourceLastChangedAt, LastSyncedAt, CreatedAt, UpdatedAt)
           VALUES (src.GhinCourseId, src.FacilityId, src.FacilityName, src.CourseName, src.ShortCourseName, src.City, src.[State], src.Country, src.PayloadHash, TRY_CONVERT(datetime2, src.SourceLastChangedAt), GETUTCDATE(), GETUTCDATE(), GETUTCDATE());
       `);
-    phaseTimings.courseMergeMs = Date.now() - courseMergeStartedAtMs;
+    phaseTimings.courseWriteMs = Date.now() - courseWriteStartedAtMs;
 
     const holeDeleteStartedAtMs = Date.now();
     await new sql.Request(tx)
@@ -659,6 +744,202 @@ async function applyProjectionBatch(pool, data) {
     const teeInsertStartedAtMs = Date.now();
     await new sql.Request(tx)
       .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
+      .input('teesJson', sql.NVarChar(sql.MAX), teesJson)
+      .query(`
+        INSERT INTO dbo.GhinRuntimeTees (
+          GhinRuntimeCourseId,
+          GhinCourseId,
+          GhinTeeId,
+          TeeName,
+          TeeSetSide,
+          Gender,
+          IsDefault,
+          CourseRating18,
+          SlopeRating18,
+          Par18,
+          Yardage18,
+          CourseRatingF9,
+          SlopeRatingF9,
+          ParF9,
+          YardageF9,
+          CourseRatingB9,
+          SlopeRatingB9,
+          ParB9,
+          YardageB9,
+          LastSyncedAt,
+          CreatedAt,
+          UpdatedAt
+        )
+        SELECT
+          courses.GhinRuntimeCourseId,
+          src.GhinCourseId,
+          src.GhinTeeId,
+          src.TeeName,
+          src.TeeSetSide,
+          src.Gender,
+          src.IsDefault,
+          src.CourseRating18,
+          src.SlopeRating18,
+          src.Par18,
+          src.Yardage18,
+          src.CourseRatingF9,
+          src.SlopeRatingF9,
+          src.ParF9,
+          src.YardageF9,
+          src.CourseRatingB9,
+          src.SlopeRatingB9,
+          src.ParB9,
+          src.YardageB9,
+          GETUTCDATE(),
+          GETUTCDATE(),
+          GETUTCDATE()
+        FROM OPENJSON(@teesJson)
+        WITH (
+          GhinCourseId VARCHAR(50) '$.ghinCourseId',
+          GhinTeeId NVARCHAR(64) '$.ghinTeeId',
+          TeeName NVARCHAR(255) '$.teeName',
+          TeeSetSide NVARCHAR(50) '$.teeSetSide',
+          Gender NVARCHAR(50) '$.gender',
+          IsDefault BIT '$.isDefault',
+          CourseRating18 DECIMAL(6,2) '$.courseRating18',
+          SlopeRating18 INT '$.slopeRating18',
+          Par18 INT '$.par18',
+          Yardage18 INT '$.yardage18',
+          CourseRatingF9 DECIMAL(6,2) '$.courseRatingF9',
+          SlopeRatingF9 INT '$.slopeRatingF9',
+          ParF9 INT '$.parF9',
+          YardageF9 INT '$.yardageF9',
+          CourseRatingB9 DECIMAL(6,2) '$.courseRatingB9',
+          SlopeRatingB9 INT '$.slopeRatingB9',
+          ParB9 INT '$.parB9',
+          YardageB9 INT '$.yardageB9'
+        ) AS src
+        INNER JOIN dbo.GhinRuntimeCourses courses
+          ON courses.GhinCourseId = src.GhinCourseId;
+      `);
+    phaseTimings.teeInsertMs = Date.now() - teeInsertStartedAtMs;
+
+    const holeInsertStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('holesJson', sql.NVarChar(sql.MAX), holesJson)
+      .query(`
+        INSERT INTO dbo.GhinRuntimeHoles (
+          GhinRuntimeTeeId,
+          GhinTeeId,
+          HoleNumber,
+          Par,
+          Handicap,
+          Yardage,
+          LastSyncedAt,
+          CreatedAt,
+          UpdatedAt
+        )
+        SELECT
+          runtimeTees.GhinRuntimeTeeId,
+          src.GhinTeeId,
+          src.HoleNumber,
+          src.Par,
+          src.Handicap,
+          src.Yardage,
+          GETUTCDATE(),
+          GETUTCDATE(),
+          GETUTCDATE()
+        FROM OPENJSON(@holesJson)
+        WITH (
+          GhinCourseId VARCHAR(50) '$.ghinCourseId',
+          GhinTeeId NVARCHAR(64) '$.ghinTeeId',
+          HoleNumber INT '$.holeNumber',
+          Par INT '$.par',
+          Handicap INT '$.handicap',
+          Yardage INT '$.yardage'
+        ) AS src
+        INNER JOIN dbo.GhinRuntimeTees runtimeTees
+          ON runtimeTees.GhinCourseId = src.GhinCourseId
+         AND runtimeTees.GhinTeeId = src.GhinTeeId;
+      `);
+    phaseTimings.holeInsertMs = Date.now() - holeInsertStartedAtMs;
+
+    const commitStartedAtMs = Date.now();
+    await tx.commit();
+    phaseTimings.commitMs = Date.now() - commitStartedAtMs;
+    return { phaseTimings };
+  } catch (error) {
+    try {
+      await tx.rollback();
+    } catch (_) {
+      // Ignore rollback errors.
+    }
+    throw error;
+  }
+}
+
+async function applyProjectionInsertBatch(pool, data) {
+  if (!data.coursePayloads.length) {
+    return { phaseTimings: createProjectionPhaseTimings() };
+  }
+
+  const phaseTimings = createProjectionPhaseTimings();
+  const tx = new sql.Transaction(pool);
+  await tx.begin();
+
+  try {
+    const payloadBuildStartedAtMs = Date.now();
+    const coursesJson = JSON.stringify(data.coursePayloads);
+    const teesJson = JSON.stringify(data.teesPayload);
+    const holesJson = JSON.stringify(data.holesPayload);
+    phaseTimings.buildPayloadMs = Date.now() - payloadBuildStartedAtMs;
+
+    const courseWriteStartedAtMs = Date.now();
+    await new sql.Request(tx)
+      .input('coursesJson', sql.NVarChar(sql.MAX), coursesJson)
+      .query(`
+        INSERT INTO dbo.GhinRuntimeCourses (
+          GhinCourseId,
+          FacilityId,
+          FacilityName,
+          CourseName,
+          ShortCourseName,
+          City,
+          State,
+          Country,
+          PayloadHash,
+          SourceLastChangedAt,
+          LastSyncedAt,
+          CreatedAt,
+          UpdatedAt
+        )
+        SELECT
+          src.GhinCourseId,
+          src.FacilityId,
+          src.FacilityName,
+          src.CourseName,
+          src.ShortCourseName,
+          src.City,
+          src.[State],
+          src.Country,
+          src.PayloadHash,
+          TRY_CONVERT(datetime2, src.SourceLastChangedAt),
+          GETUTCDATE(),
+          GETUTCDATE(),
+          GETUTCDATE()
+        FROM OPENJSON(@coursesJson)
+        WITH (
+          GhinCourseId VARCHAR(50) '$.ghinCourseId',
+          FacilityId VARCHAR(50) '$.facilityId',
+          FacilityName NVARCHAR(255) '$.facilityName',
+          CourseName NVARCHAR(150) '$.courseName',
+          ShortCourseName NVARCHAR(150) '$.shortCourseName',
+          City NVARCHAR(100) '$.city',
+          [State] NVARCHAR(50) '$.state',
+          Country NVARCHAR(50) '$.country',
+          PayloadHash CHAR(64) '$.payloadHash',
+          SourceLastChangedAt NVARCHAR(50) '$.sourceLastChangedAt'
+        ) AS src;
+      `);
+    phaseTimings.courseWriteMs = Date.now() - courseWriteStartedAtMs;
+
+    const teeInsertStartedAtMs = Date.now();
+    await new sql.Request(tx)
       .input('teesJson', sql.NVarChar(sql.MAX), teesJson)
       .query(`
         INSERT INTO dbo.GhinRuntimeTees (
@@ -828,39 +1109,87 @@ async function run() {
         `[projection] batch ${batchNumber}/${requestedBatches.length} starting requested=${processedBeforeBatch + 1}-${Math.min(processedBeforeBatch + idsChunk.length, summary.requested)} of ${summary.requested}`
       );
 
-      const cacheLoadStartedAtMs = Date.now();
-      const cacheData = await loadCacheProjectionData(idsChunk);
-      const cacheLoadDurationMs = Date.now() - cacheLoadStartedAtMs;
+      const headerLoadStartedAtMs = Date.now();
+      const cacheHeaders = await loadCacheProjectionHeaders(idsChunk);
+      const headerLoadDurationMs = Date.now() - headerLoadStartedAtMs;
 
-      for (const invalid of cacheData.invalidCourses) {
+      for (const invalid of cacheHeaders.invalidCourses) {
         summary.failed += 1;
         summary.failures.push(invalid);
       }
 
-      summary.scanned += cacheData.coursePayloads.length;
-      if (!cacheData.coursePayloads.length) {
+      summary.scanned += cacheHeaders.courseHeaders.length;
+      if (!cacheHeaders.courseHeaders.length) {
         continue;
       }
 
       const hashLookupStartedAtMs = Date.now();
       const golfHashes = await getGolfPayloadHashes(
         golfPool,
-        cacheData.coursePayloads.map((course) => course.ghinCourseId)
+        cacheHeaders.courseHeaders.map((course) => course.courseId)
       );
       const hashLookupDurationMs = Date.now() - hashLookupStartedAtMs;
 
       const missingIds = [];
       const staleIds = [];
+      const potentialStaleIds = [];
       const nochangeIds = [];
 
-      for (const course of cacheData.coursePayloads) {
-        const golfHash = golfHashes.get(String(course.ghinCourseId));
-        if (!golfHashes.has(String(course.ghinCourseId))) {
-          missingIds.push(String(course.ghinCourseId));
-        } else if (golfHash !== course.payloadHash) {
-          staleIds.push(String(course.ghinCourseId));
+      for (const course of cacheHeaders.courseHeaders) {
+        const courseId = String(course.courseId);
+        const golfRow = golfHashes.get(courseId);
+
+        if (!golfHashes.has(courseId)) {
+          missingIds.push(courseId);
+        } else if (course.lastPayloadHash && golfRow.payloadHash === course.lastPayloadHash) {
+          nochangeIds.push(courseId);
+        } else if (course.updatedAt instanceof Date
+          && golfRow.lastSyncedAt instanceof Date
+          && course.updatedAt.getTime() <= golfRow.lastSyncedAt.getTime()) {
+          nochangeIds.push(courseId);
         } else {
-          nochangeIds.push(String(course.ghinCourseId));
+          potentialStaleIds.push(courseId);
+        }
+      }
+
+      const hydrateIds = [];
+      if (args.mode === 'all') {
+        hydrateIds.push(...cacheHeaders.courseHeaders.map((course) => String(course.courseId)));
+      } else {
+        hydrateIds.push(...potentialStaleIds);
+        if (!args.dryRun && args.mode !== 'stale') {
+          hydrateIds.push(...missingIds);
+        }
+      }
+
+      const uniqueHydrateIds = Array.from(new Set(hydrateIds));
+      let cacheData = { coursePayloads: [], teesPayload: [], holesPayload: [], invalidCourses: [] };
+      let cacheLoadDurationMs = 0;
+      let hydratedCourseIds = new Set();
+
+      if (uniqueHydrateIds.length) {
+        const cacheLoadStartedAtMs = Date.now();
+        cacheData = await loadCacheProjectionData(uniqueHydrateIds);
+        cacheLoadDurationMs = Date.now() - cacheLoadStartedAtMs;
+
+        for (const invalid of cacheData.invalidCourses) {
+          summary.failed += 1;
+          summary.failures.push(invalid);
+        }
+
+        hydratedCourseIds = new Set(cacheData.coursePayloads.map((course) => String(course.ghinCourseId)));
+        for (const courseId of potentialStaleIds) {
+          const course = cacheData.coursePayloads.find((item) => String(item.ghinCourseId) === courseId);
+          if (!course) {
+            continue;
+          }
+
+          const golfRow = golfHashes.get(courseId);
+          if (!golfRow || golfRow.payloadHash !== course.payloadHash) {
+            staleIds.push(courseId);
+          } else {
+            nochangeIds.push(courseId);
+          }
         }
       }
 
@@ -879,38 +1208,14 @@ async function run() {
         targetIds = [...missingIds, ...staleIds];
       }
 
-      if (!targetIds.length || args.dryRun) {
-        continue;
-      }
-
-      const targetData = filterProjectionData(cacheData, targetIds);
-      let projectionPhaseTimings = createProjectionPhaseTimings();
-      let usedFallbackProjection = false;
-
-      try {
-        const batchProjection = await applyProjectionBatch(golfPool, targetData);
-        projectionPhaseTimings = batchProjection.phaseTimings;
-        summary.projected += targetIds.length;
-      } catch (batchError) {
-        usedFallbackProjection = true;
-        if (targetIds.length === 1) {
-          summary.failed += 1;
-          summary.failures.push({ courseId: targetIds[0], error: batchError.message });
-          continue;
-        }
-
-        for (const courseId of targetIds) {
-          const singleData = filterProjectionData(cacheData, [courseId]);
-          try {
-            const singleProjection = await applyProjectionBatch(golfPool, singleData);
-            addProjectionPhaseTimings(projectionPhaseTimings, singleProjection.phaseTimings);
-            summary.projected += 1;
-          } catch (singleError) {
-            summary.failed += 1;
-            summary.failures.push({ courseId, error: singleError.message });
-          }
-        }
-      }
+      const targetIdsForWrite = hydratedCourseIds.size > 0
+        ? targetIds.filter((courseId) => hydratedCourseIds.has(courseId))
+        : targetIds;
+      const missingTargetIdsForWrite = targetIdsForWrite.filter((courseId) => missingIds.includes(courseId));
+      const staleTargetIdsForWrite = targetIdsForWrite.filter((courseId) => staleIds.includes(courseId));
+      const previewTargetData = cacheData.coursePayloads.length > 0
+        ? filterProjectionData(cacheData, targetIdsForWrite)
+        : null;
 
       const requestedProcessed = Math.min((batchIndex + 1) * args.batchSize, summary.requested);
       const elapsedMs = Date.now() - runStartedAtMs;
@@ -920,12 +1225,47 @@ async function run() {
         ? remainingRequested * avgRequestedPerMs
         : 0;
 
+      if (!targetIdsForWrite.length || args.dryRun) {
+        console.log(
+          `[projection] batch ${batchNumber}/${requestedBatches.length} complete ${requestedProcessed}/${summary.requested} (${formatPercent(requestedProcessed, summary.requested)}%) projected=${summary.projected} missing=${summary.missing} stale=${summary.stale} nochange=${summary.nochange} failed=${summary.failed} batchElapsed=${formatDurationMs(Date.now() - batchStartedAtMs)} totalElapsed=${formatDurationMs(elapsedMs)} eta=${formatDurationMs(etaMs)}`
+        );
+
+        console.log(
+          `[projection-detail] batch ${batchNumber}/${requestedBatches.length} targetCourses=${args.dryRun ? targetIds.length : targetIdsForWrite.length} missingWrites=${missingTargetIdsForWrite.length} staleWrites=${staleTargetIdsForWrite.length} targetTees=${previewTargetData?.teesPayload.length || 0} targetHoles=${previewTargetData?.holesPayload.length || 0} headerLoad=${formatDurationMs(headerLoadDurationMs)} cacheLoad=${formatDurationMs(cacheLoadDurationMs)} hashLookup=${formatDurationMs(hashLookupDurationMs)} ${formatProjectionPhaseTimings(createProjectionPhaseTimings())} fallback=no`
+        );
+        continue;
+      }
+
+      const targetData = previewTargetData || filterProjectionData(cacheData, targetIdsForWrite);
+      let projectionPhaseTimings = createProjectionPhaseTimings();
+      let usedFallbackProjection = false;
+
+      if (args.mode === 'all') {
+        const batchProjection = await writeProjectionData(golfPool, targetData, applyProjectionReplaceBatch, summary);
+        addProjectionPhaseTimings(projectionPhaseTimings, batchProjection.phaseTimings);
+        summary.projected += batchProjection.projected;
+        usedFallbackProjection = batchProjection.usedFallback;
+      } else {
+        const missingTargetData = filterProjectionData(cacheData, missingTargetIdsForWrite);
+        const staleTargetData = filterProjectionData(cacheData, staleTargetIdsForWrite);
+
+        const missingProjection = await writeProjectionData(golfPool, missingTargetData, applyProjectionInsertBatch, summary);
+        addProjectionPhaseTimings(projectionPhaseTimings, missingProjection.phaseTimings);
+        summary.projected += missingProjection.projected;
+        usedFallbackProjection = usedFallbackProjection || missingProjection.usedFallback;
+
+        const staleProjection = await writeProjectionData(golfPool, staleTargetData, applyProjectionReplaceBatch, summary);
+        addProjectionPhaseTimings(projectionPhaseTimings, staleProjection.phaseTimings);
+        summary.projected += staleProjection.projected;
+        usedFallbackProjection = usedFallbackProjection || staleProjection.usedFallback;
+      }
+
       console.log(
         `[projection] batch ${batchNumber}/${requestedBatches.length} complete ${requestedProcessed}/${summary.requested} (${formatPercent(requestedProcessed, summary.requested)}%) projected=${summary.projected} missing=${summary.missing} stale=${summary.stale} nochange=${summary.nochange} failed=${summary.failed} batchElapsed=${formatDurationMs(Date.now() - batchStartedAtMs)} totalElapsed=${formatDurationMs(elapsedMs)} eta=${formatDurationMs(etaMs)}`
       );
 
       console.log(
-        `[projection-detail] batch ${batchNumber}/${requestedBatches.length} targetCourses=${targetIds.length} targetTees=${targetData.teesPayload.length} targetHoles=${targetData.holesPayload.length} cacheLoad=${formatDurationMs(cacheLoadDurationMs)} hashLookup=${formatDurationMs(hashLookupDurationMs)} ${formatProjectionPhaseTimings(projectionPhaseTimings)} fallback=${usedFallbackProjection ? 'yes' : 'no'}`
+        `[projection-detail] batch ${batchNumber}/${requestedBatches.length} targetCourses=${targetIdsForWrite.length} missingWrites=${missingTargetIdsForWrite.length} staleWrites=${staleTargetIdsForWrite.length} targetTees=${targetData.teesPayload.length} targetHoles=${targetData.holesPayload.length} headerLoad=${formatDurationMs(headerLoadDurationMs)} cacheLoad=${formatDurationMs(cacheLoadDurationMs)} hashLookup=${formatDurationMs(hashLookupDurationMs)} ${formatProjectionPhaseTimings(projectionPhaseTimings)} fallback=${usedFallbackProjection ? 'yes' : 'no'}`
       );
     }
 

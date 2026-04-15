@@ -1,8 +1,8 @@
 # GolfMatch GHIN Middleware — Architecture & Integration Guide
 
-**Last Updated:** April 9, 2026  
+**Last Updated:** April 14, 2026  
 **Project:** `golfmatch-ghin-middleware` (Node.js 20.x + Express)  
-**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, full sandbox-accessible catalog projection into golfdb runtime, and the normalized GHIN score-posting plus score-readback boundary are validated; staging webhook delivery and real inbox-driven GPA approval are now proven, and approval-track work is centered on staging data-quality follow-through rather than more runtime cutover speculation
+**Status:** Active development — mirror-first runtime cutover, state-partition backfill, cache-to-mirror sync automation, additive course-name/schema hardening, full sandbox-accessible catalog projection into golfdb runtime, and the normalized GHIN score-posting plus score-readback boundary are validated; staging webhook delivery and real inbox-driven GPA approval are now proven, course-import auditing now separates recoverable/manual review from irrecoverable source defects, and approval-track work is centered on staging data-quality follow-through rather than more runtime cutover speculation
 
 ---
 
@@ -24,7 +24,7 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - **Runtime mirror in golfdb** — `GhinRuntimeCourses`, `GhinRuntimeTees`, `GhinRuntimeHoles` are the locked runtime serving model for GHIN-backed course reads
 - **Bridge table note** — `GhinCourseMapping` exists from earlier design and is retained pending audit before any cleanup/removal
 
-### Current validated progress (Updated Mar 27, 2026)
+### Current validated progress (Updated Apr 14, 2026)
 
 - Cache DB seed and smoke flow validated with real GHIN course `1385` (search -> tees -> holes).
 - Course location normalization was corrected: read `CourseCity` / `CourseState` from GHIN payload and normalize state `US-XX` -> `XX`.
@@ -39,6 +39,11 @@ The **GHIN Middleware** is a dedicated API layer that bridges **Fore Play (golfm
 - State-partition discovery/backfill is implemented to enumerate unknown GHIN course IDs before sync.
 - The pipeline is now split cleanly: stage 1 validates and writes canonical GHIN data into CacheDB, and stage 2 bulk-projects CacheDB rows into golfdb runtime tables.
 - Multi-state proving confirmed the stage 2 bulk projector is fast enough.
+- Later proving runs expanded beyond the initial state set and now validate import behavior across RI, PA, MA, NH, VT, ME, NJ, DE, MD, FL, CA, and TX.
+- Large-state staging imports disproved the old 999-course concern. Florida discovered `1197` courses and imported `1196` after approved salvage; California discovered `1002`; Texas discovered `678`.
+- State audit output now separates `manualActionQueue` from `irrecoverableFailures`, reducing wasted follow-up on source-data defects that cannot be fixed locally.
+- `backfill-ghin-courses.js --projection-mode=none --delta-check` is now the primary unknown-coverage import command: rediscover all US partitions, diff against CacheDB, import only missing courses, and leave checkpoint state untouched.
+- Operational rule is now explicit: checkpoint contents and state presence in `GHIN_Courses` are not treated as proof of full catalog coverage.
 - Full sandbox-accessible catalog loading is now proven for the approval track: CacheDB holds the sandbox-accessible course set, the default `all-US` backfill scope was widened to current GHIN US jurisdictions, and bulk projection into an empty golfdb runtime target completed successfully.
 - Sandbox course-discovery limitations are understood and explicitly treated as sandbox behavior limits, not active middleware defects.
 - Bulk stage 1 CacheDB writer work remains a future scaling task, but it is no longer a gate before the standalone staging-readiness checklist path.

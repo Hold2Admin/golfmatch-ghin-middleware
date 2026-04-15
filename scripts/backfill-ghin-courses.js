@@ -545,6 +545,8 @@ function tryPrepareAutomaticPruneImport(course, validateCourseForSync, triggerEr
   const prunedCourse = cloneCourse(course, resolvedInspection.validTees);
   validateCourseForSync(prunedCourse);
 
+  const manualValidationRequired = override.manualValidationRequired !== false;
+
   return {
     applied: true,
     course: prunedCourse,

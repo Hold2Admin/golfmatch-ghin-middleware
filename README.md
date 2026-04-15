@@ -2,7 +2,7 @@
 
 Middleware service for transforming and securing USGA GHIN/WHS API data for the Fore Play golf pairing application.
 
-Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, full sandbox-accessible catalog projection into golfdb runtime, and the score-posting plus score-readback boundary are complete and validated. Staging webhook ingress and tokenized GPA callback registration are now proven, the real inbox-driven approval workflow is working end to end, and Golf Match runtime reads are already cut over to golfdb mirror tables. Further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
+Current checkpoint: live GHIN course/player connectivity, cache DB writes, state-partition discovery/backfill, golfdb runtime-mirror callback sync, bulk CacheDB -> GolfDB runtime projection, webhook lifecycle validation, scheduled reconciliation, additive `ShortCourseName` hardening, full sandbox-accessible catalog projection into golfdb runtime, and the score-posting plus score-readback boundary are complete and validated. Staging webhook ingress and tokenized GPA callback registration are now proven, the real inbox-driven approval workflow is working end to end, and Golf Match runtime reads are already cut over to golfdb mirror tables. Course-import operations are now also proven on large staging states: Florida discovered `1197` courses and imported `1196` after approved salvage, California discovered `1002`, and Texas discovered `678`. Audit output now separates `manualActionQueue` from `irrecoverableFailures`, and the primary unknown-coverage import path is now all-states `--delta-check`. Further stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
 
 ## Architecture
 
@@ -180,10 +180,36 @@ Critical secrets stored in Azure Key Vault:
 - The real product approval path is inbox-driven. The middleware still exposes status-update helpers for staging/admin testing, but Fore Play should not present that as the normal approval story.
 - Do not assume staging course/tee catalogs match sandbox or previously mirrored data. Current staging evidence already shows tee-set ID and rating drift on real courses, so bulk staging import plus ongoing webhook/reconciliation sync should happen before trusting score posting broadly.
 
+## Catalog Import Operations
+
+Primary unknown-coverage import run:
+
+```powershell
+Set-Location 'C:\dev\golfmatch-ghin-middleware'
+node .\scripts\backfill-ghin-courses.js --projection-mode=none --delta-check
+```
+
+What it does:
+
+- rediscovers all US jurisdiction partitions from GHIN
+- diffs discovered IDs against `dbo.GHIN_Courses`
+- fetches full GHIN detail only for missing IDs
+- validates before any CacheDB write
+- writes state audit artifacts without mutating checkpoint state
+
+Targeted state triage remains available when you already know the scope:
+
+```powershell
+Set-Location 'C:\dev\golfmatch-ghin-middleware'
+node .\scripts\backfill-ghin-courses.js --states=US-FL --projection-mode=none --reset-checkpoint
+```
+
+State audit files live under `scripts/logs/state-audits/` and now distinguish `pruneReview`, `manualActionQueue`, and `irrecoverableFailures`.
+
 ## Development Phases
 
 - **Phase 1 / 1.5** (Validated): Live GHIN connectivity, separate cache DB, runtime mirror sync, webhook/reconciliation automation, additive course-name hardening
-- **Phase 2** (Validated core flow): Golf Match runtime read-path cutover, state-partition catalog discovery/backfill, and CacheDB -> GolfDB bulk runtime projection
+- **Phase 2** (Validated core flow): Golf Match runtime read-path cutover, state-partition catalog discovery/backfill, all-states delta-check execution for unknown coverage, and CacheDB -> GolfDB bulk runtime projection
 - **Phase 2 Remaining Work** (Deferred scaling): Replace stage 1 per-course CacheDB writes with a bulk CacheDB writer when national-scale catalog tuning becomes active work again
 - **Phase 3**: Live handicap pulls and player caching
 - **Phase 4+**: Expanded verification/reconciliation, golfer-state validation, and operational hardening on top of the now-validated score-posting and score-readback boundary

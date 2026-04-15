@@ -1,10 +1,11 @@
 /**
- * Purge GHIN course rows for a single state from GolfDB and CacheDB.
- * Also removes that state from the middleware backfill checkpoint so the next
- * run can start cleanly.
+ * Purge GHIN course rows for one or more states from GolfDB and/or CacheDB.
+ * When purging cache, also removes those states from the middleware backfill
+ * checkpoint so the next run can start cleanly.
  *
  * Usage:
  *   node scripts/purge-ghin-state.js --state=US-CT --yes
+ *   node scripts/purge-ghin-state.js --states=US-WA,US-OR,US-CA --target=runtime --yes
  *   node scripts/purge-ghin-state.js --state=CT --dry-run
  *   node scripts/purge-ghin-state.js --state=US-NY --exclude-course-ids=3857 --yes
  */
@@ -16,6 +17,23 @@ const database = require('../src/services/database');
 const { loadSecrets } = require('../src/config/secrets');
 
 const DEFAULT_CHECKPOINT_PATH = path.join(__dirname, 'logs', 'ghin-course-backfill-checkpoint.json');
+const RUNTIME_PURGE_BATCH_SIZE = 250;
+
+function formatDurationMs(durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return '0s';
+  }
+
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}
 
 function normalizeState(rawState) {
   const normalized = String(rawState || '').trim().toUpperCase();
@@ -23,6 +41,15 @@ function normalizeState(rawState) {
     return null;
   }
   return normalized.startsWith('US-') ? normalized.slice(3) : normalized;
+}
+
+function parseStates(value) {
+  return Array.from(new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => normalizeState(item))
+      .filter(Boolean)
+  ));
 }
 
 function parseCourseIds(value) {
@@ -36,12 +63,13 @@ function parseCourseIds(value) {
 
 function parseArgs(argv) {
   const args = {
-    state: null,
+    states: [],
     dryRun: false,
     yes: false,
     excludeCourseIds: [],
     checkpointPath: DEFAULT_CHECKPOINT_PATH,
-    resetCheckpointState: true
+    resetCheckpointState: true,
+    target: 'both'
   };
 
   for (const raw of argv) {
@@ -62,7 +90,12 @@ function parseArgs(argv) {
     if (value == null) continue;
 
     if (flag === '--state') {
-      args.state = normalizeState(value);
+      args.states.push(...parseStates(value));
+      continue;
+    }
+
+    if (flag === '--states') {
+      args.states.push(...parseStates(value));
       continue;
     }
 
@@ -73,13 +106,27 @@ function parseArgs(argv) {
 
     if (flag === '--checkpoint') {
       args.checkpointPath = path.resolve(value);
+      continue;
+    }
+
+    if (flag === '--target') {
+      args.target = String(value).trim().toLowerCase();
     }
   }
 
+  args.states = Array.from(new Set(args.states));
   args.excludeCourseIds = Array.from(new Set(args.excludeCourseIds));
 
-  if (!args.state) {
-    throw new Error('Missing required --state=US-XX argument.');
+  if (!args.states.length) {
+    throw new Error('Missing required --state=US-XX or --states=US-XX,US-YY argument.');
+  }
+
+  if (!['runtime', 'cache', 'both'].includes(args.target)) {
+    throw new Error('Invalid --target value. Expected runtime, cache, or both.');
+  }
+
+  if (args.target === 'runtime') {
+    args.resetCheckpointState = false;
   }
 
   if (!args.dryRun && !args.yes) {
@@ -89,12 +136,21 @@ function parseArgs(argv) {
   return args;
 }
 
+function chunk(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 async function getGolfDbPool(secrets) {
   const pool = new sql.ConnectionPool({
     server: secrets.AZURE_SQL_SERVER,
     database: secrets.AZURE_SQL_DATABASE,
     user: secrets.AZURE_SQL_USER,
     password: secrets.AZURE_SQL_PASSWORD,
+    requestTimeout: 0,
     options: {
       encrypt: true,
       trustServerCertificate: false,
@@ -110,27 +166,27 @@ async function getGolfDbPool(secrets) {
   return pool.connect();
 }
 
-async function getCacheCounts(state, excludeCourseIds = []) {
+async function getCacheCounts(states, excludeCourseIds = []) {
   const dbSql = database.sql;
   const rows = await database.query(
     `SELECT
        (SELECT COUNT(1)
         FROM dbo.GHIN_Courses
-        WHERE State = @state
+        WHERE State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS courseCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Tees t
         INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
-        WHERE c.State = @state
+        WHERE c.State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS teeCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Holes h
         INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
         INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
-        WHERE c.State = @state
+        WHERE c.State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS holeCount`,
     {
-      state: { type: dbSql.VarChar(10), value: state },
+      statesJson: { type: dbSql.NVarChar(dbSql.MAX), value: JSON.stringify(states) },
       excludeIdsJson: { type: dbSql.NVarChar(dbSql.MAX), value: JSON.stringify(excludeCourseIds) }
     }
   );
@@ -142,26 +198,26 @@ async function getCacheCounts(state, excludeCourseIds = []) {
   };
 }
 
-async function getGolfCounts(pool, state, excludeCourseIds = []) {
+async function getGolfCounts(pool, states, excludeCourseIds = []) {
   const result = await pool.request()
-    .input('state', sql.NVarChar(50), state)
+    .input('statesJson', sql.NVarChar(sql.MAX), JSON.stringify(states))
     .input('excludeIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(excludeCourseIds))
     .query(`
       SELECT
         (SELECT COUNT(1)
          FROM dbo.GhinRuntimeCourses
-         WHERE [State] = @state
+         WHERE [State] IN (SELECT [value] FROM OPENJSON(@statesJson))
            AND GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS courseCount,
         (SELECT COUNT(1)
          FROM dbo.GhinRuntimeTees t
          INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-         WHERE c.[State] = @state
+         WHERE c.[State] IN (SELECT [value] FROM OPENJSON(@statesJson))
            AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS teeCount,
         (SELECT COUNT(1)
          FROM dbo.GhinRuntimeHoles h
          INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
          INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-         WHERE c.[State] = @state
+         WHERE c.[State] IN (SELECT [value] FROM OPENJSON(@statesJson))
            AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS holeCount
     `);
 
@@ -172,46 +228,106 @@ async function getGolfCounts(pool, state, excludeCourseIds = []) {
   };
 }
 
-async function purgeGolfState(pool, state, excludeCourseIds = []) {
-  const tx = new sql.Transaction(pool);
-  await tx.begin();
+async function getGolfCourseIds(pool, states, excludeCourseIds = []) {
+  const result = await pool.request()
+    .input('statesJson', sql.NVarChar(sql.MAX), JSON.stringify(states))
+    .input('excludeIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(excludeCourseIds))
+    .query(`
+      SELECT GhinCourseId AS courseId
+      FROM dbo.GhinRuntimeCourses
+      WHERE [State] IN (SELECT [value] FROM OPENJSON(@statesJson))
+        AND GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))
+      ORDER BY TRY_CONVERT(BIGINT, GhinCourseId), GhinCourseId
+    `);
 
-  try {
-    const req = new sql.Request(tx);
-    await req
-      .input('state', sql.NVarChar(50), state)
-      .input('excludeIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(excludeCourseIds))
-      .query(`
+  return (result.recordset || []).map((row) => String(row.courseId)).filter(Boolean);
+}
+
+async function purgeGolfState(pool, states, excludeCourseIds = []) {
+  const startedAtMs = Date.now();
+  console.log(`[purge] runtime delete starting states=${states.join(',')} excludeIds=${excludeCourseIds.length}`);
+
+  const targetCourseIds = await getGolfCourseIds(pool, states, excludeCourseIds);
+  if (!targetCourseIds.length) {
+    console.log('[purge] runtime delete skipped no matching courses');
+    console.log(`[purge] runtime delete complete elapsed=${formatDurationMs(Date.now() - startedAtMs)}`);
+    return;
+  }
+
+  const courseIdBatches = chunk(targetCourseIds, RUNTIME_PURGE_BATCH_SIZE);
+  let totalHoleRows = 0;
+  let totalTeeRows = 0;
+  let totalCourseRows = 0;
+  let committedCourses = 0;
+
+  for (const [batchIndex, courseIds] of courseIdBatches.entries()) {
+    const batchNumber = batchIndex + 1;
+    const batchStartedAtMs = Date.now();
+    console.log(`[purge] runtime batch ${batchNumber}/${courseIdBatches.length} starting courses=${courseIds.length}`);
+
+    const tx = new sql.Transaction(pool);
+    await tx.begin();
+
+    try {
+      const deletePhase = async (label, query) => {
+        const req = new sql.Request(tx);
+        req.timeout = 0;
+
+        const result = await req
+          .input('idsJson', sql.NVarChar(sql.MAX), JSON.stringify(courseIds))
+          .query(query);
+
+        return Array.isArray(result.recordsAffected)
+          ? result.recordsAffected.reduce((sum, count) => sum + Number(count || 0), 0)
+          : 0;
+      };
+
+      const holeRows = await deletePhase('holes', `
         DELETE h
         FROM dbo.GhinRuntimeHoles h
         INNER JOIN dbo.GhinRuntimeTees t ON t.GhinRuntimeTeeId = h.GhinRuntimeTeeId
         INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-        WHERE c.[State] = @state
-          AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
+        WHERE c.GhinCourseId IN (SELECT [value] FROM OPENJSON(@idsJson));
+      `);
 
+      const teeRows = await deletePhase('tees', `
         DELETE t
         FROM dbo.GhinRuntimeTees t
         INNER JOIN dbo.GhinRuntimeCourses c ON c.GhinRuntimeCourseId = t.GhinRuntimeCourseId
-        WHERE c.[State] = @state
-          AND c.GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
-
-        DELETE FROM dbo.GhinRuntimeCourses
-        WHERE [State] = @state
-          AND GhinCourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
+        WHERE c.GhinCourseId IN (SELECT [value] FROM OPENJSON(@idsJson));
       `);
 
-    await tx.commit();
-  } catch (error) {
-    try {
-      await tx.rollback();
-    } catch (_) {
-      // Ignore rollback errors.
+      const courseRows = await deletePhase('courses', `
+        DELETE FROM dbo.GhinRuntimeCourses
+        WHERE GhinCourseId IN (SELECT [value] FROM OPENJSON(@idsJson));
+      `);
+
+      await tx.commit();
+
+      committedCourses += courseIds.length;
+      totalHoleRows += holeRows;
+      totalTeeRows += teeRows;
+      totalCourseRows += courseRows;
+
+      console.log(
+        `[purge] runtime batch ${batchNumber}/${courseIdBatches.length} complete committedCourses=${committedCourses}/${targetCourseIds.length} deletedCourses=${courseRows} deletedTees=${teeRows} deletedHoles=${holeRows} batchElapsed=${formatDurationMs(Date.now() - batchStartedAtMs)} totalElapsed=${formatDurationMs(Date.now() - startedAtMs)}`
+      );
+    } catch (error) {
+      try {
+        await tx.rollback();
+      } catch (_) {
+        // Ignore rollback errors.
+      }
+      throw error;
     }
-    throw error;
   }
+
+  console.log(
+    `[purge] runtime delete complete deletedCourses=${totalCourseRows} deletedTees=${totalTeeRows} deletedHoles=${totalHoleRows} elapsed=${formatDurationMs(Date.now() - startedAtMs)}`
+  );
 }
 
-async function purgeCacheState(state, excludeCourseIds = []) {
+async function purgeCacheState(states, excludeCourseIds = []) {
   const pool = await database.connect();
   if (!pool) {
     throw new Error('Cache DB is not configured.');
@@ -223,16 +339,22 @@ async function purgeCacheState(state, excludeCourseIds = []) {
 
   try {
     const req = new dbSql.Request(tx);
+    req.timeout = 0;
+
+    const startedAtMs = Date.now();
+    console.log(`[purge] cache delete starting states=${states.join(',')} excludeIds=${excludeCourseIds.length}`);
+
     await req
-      .input('state', dbSql.VarChar(10), state)
+      .input('statesJson', dbSql.NVarChar(dbSql.MAX), JSON.stringify(states))
       .input('excludeIdsJson', dbSql.NVarChar(dbSql.MAX), JSON.stringify(excludeCourseIds))
       .query(`
         DELETE FROM dbo.GHIN_Courses
-        WHERE State = @state
+        WHERE State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
       `);
 
     await tx.commit();
+    console.log(`[purge] cache delete complete elapsed=${formatDurationMs(Date.now() - startedAtMs)}`);
   } catch (error) {
     try {
       await tx.rollback();
@@ -275,20 +397,25 @@ function recalculateTotals(stateSummaries) {
   return totals;
 }
 
-function resetCheckpointState(checkpointPath, state) {
+function resetCheckpointState(checkpointPath, states) {
   if (!fs.existsSync(checkpointPath)) {
     return { updated: false, reason: 'checkpoint_not_found' };
   }
 
   const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, 'utf8'));
+  const fullStateCodes = new Set(states.map((state) => `US-${state}`));
   checkpoint.completedStates = Array.isArray(checkpoint.completedStates)
-    ? checkpoint.completedStates.filter((item) => item !== `US-${state}`)
+    ? checkpoint.completedStates.filter((item) => !fullStateCodes.has(item))
     : [];
   if (checkpoint.failedStates && typeof checkpoint.failedStates === 'object') {
-    delete checkpoint.failedStates[`US-${state}`];
+    for (const state of fullStateCodes) {
+      delete checkpoint.failedStates[state];
+    }
   }
   if (checkpoint.stateSummaries && typeof checkpoint.stateSummaries === 'object') {
-    delete checkpoint.stateSummaries[`US-${state}`];
+    for (const state of fullStateCodes) {
+      delete checkpoint.stateSummaries[state];
+    }
   }
   checkpoint.totals = recalculateTotals(checkpoint.stateSummaries || {});
   checkpoint.updatedAt = new Date().toISOString();
@@ -299,6 +426,7 @@ function resetCheckpointState(checkpointPath, state) {
 
 async function run() {
   const args = parseArgs(process.argv.slice(2));
+  const runStartedAtMs = Date.now();
   const secrets = await loadSecrets();
   Object.assign(process.env, secrets);
 
@@ -306,31 +434,48 @@ async function run() {
   await database.connect();
 
   try {
-    const before = {
-      golf: await getGolfCounts(golfPool, args.state, args.excludeCourseIds),
-      cache: await getCacheCounts(args.state, args.excludeCourseIds)
-    };
+    console.log(`[purge] starting states=${args.states.join(',')} target=${args.target} dryRun=${args.dryRun} excludeIds=${args.excludeCourseIds.length}`);
+
+    const before = {};
+    if (args.target === 'runtime' || args.target === 'both') {
+      before.golf = await getGolfCounts(golfPool, args.states, args.excludeCourseIds);
+      console.log(`[purge] runtime before courses=${before.golf.courseCount} tees=${before.golf.teeCount} holes=${before.golf.holeCount}`);
+    }
+    if (args.target === 'cache' || args.target === 'both') {
+      before.cache = await getCacheCounts(args.states, args.excludeCourseIds);
+      console.log(`[purge] cache before courses=${before.cache.courseCount} tees=${before.cache.teeCount} holes=${before.cache.holeCount}`);
+    }
 
     const summary = {
-      state: args.state,
+      states: args.states,
+      target: args.target,
       dryRun: args.dryRun,
       excludeCourseIds: args.excludeCourseIds,
       before,
       after: null,
-      checkpoint: args.resetCheckpointState && !args.dryRun
-        ? resetCheckpointState(args.checkpointPath, args.state)
-        : { updated: false, reason: args.dryRun ? 'dry_run' : 'not_requested' }
+      checkpoint: args.resetCheckpointState && !args.dryRun && (args.target === 'cache' || args.target === 'both')
+        ? resetCheckpointState(args.checkpointPath, args.states)
+        : { updated: false, reason: args.dryRun ? 'dry_run' : (args.target === 'runtime' ? 'runtime_only' : 'not_requested') }
     };
 
     if (!args.dryRun) {
-      await purgeGolfState(golfPool, args.state, args.excludeCourseIds);
-      await purgeCacheState(args.state, args.excludeCourseIds);
-      summary.after = {
-        golf: await getGolfCounts(golfPool, args.state, args.excludeCourseIds),
-        cache: await getCacheCounts(args.state, args.excludeCourseIds)
-      };
+      if (args.target === 'runtime' || args.target === 'both') {
+        await purgeGolfState(golfPool, args.states, args.excludeCourseIds);
+      }
+      if (args.target === 'cache' || args.target === 'both') {
+        await purgeCacheState(args.states, args.excludeCourseIds);
+      }
+
+      summary.after = {};
+      if (args.target === 'runtime' || args.target === 'both') {
+        summary.after.golf = await getGolfCounts(golfPool, args.states, args.excludeCourseIds);
+      }
+      if (args.target === 'cache' || args.target === 'both') {
+        summary.after.cache = await getCacheCounts(args.states, args.excludeCourseIds);
+      }
     }
 
+    console.log(`[purge] finished elapsed=${formatDurationMs(Date.now() - runStartedAtMs)}`);
     console.log(JSON.stringify(summary, null, 2));
   } finally {
     await golfPool.close();
