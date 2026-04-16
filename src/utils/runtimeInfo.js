@@ -17,12 +17,12 @@ function getRuntimeInfo() {
 
   return {
     appVersion: packageJson.version,
-    deploymentVersion: process.env.APP_DEPLOYMENT_VERSION || deploymentInfo.deploymentVersion || packageJson.version,
-    commitSha: process.env.APP_DEPLOYMENT_SHA || deploymentInfo.commitSha || null,
-    runId: process.env.APP_DEPLOYMENT_RUN_ID || deploymentInfo.runId || null,
-    runAttempt: process.env.APP_DEPLOYMENT_RUN_ATTEMPT || deploymentInfo.runAttempt || null,
-    deployedAtUtc: process.env.APP_DEPLOYED_AT_UTC || deploymentInfo.deployedAtUtc || null,
-    packageBlobName: process.env.APP_PACKAGE_BLOB_NAME || deploymentInfo.packageBlobName || null
+    deploymentVersion: deploymentInfo.deploymentVersion || packageJson.version,
+    commitSha: deploymentInfo.commitSha || null,
+    runId: deploymentInfo.runId || null,
+    runAttempt: deploymentInfo.runAttempt || null,
+    deployedAtUtc: deploymentInfo.deployedAtUtc || null,
+    packageBlobName: deploymentInfo.packageBlobName || null
   };
 }
 
