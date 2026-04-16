@@ -436,13 +436,6 @@ async function bootstrap() {
     logger.warn('Secrets loader fallback in use', { warning: secretStatus.warning });
   }
 
-  // Initialize Application Insights after secrets are loaded/fallback is known.
-  const appInsightsStartedMs = Date.now();
-  initializeAppInsights();
-  logStartupPhase('appinsights-init-complete', {
-    durationMs: Date.now() - appInsightsStartedMs
-  });
-
   // Lazy-initialize optional services in background (do not block readiness).
   setImmediate(async () => {
     logStartupPhase('background-service-init-start', {
@@ -518,14 +511,31 @@ async function bootstrap() {
     const ghinEnvLabel = process.env.GHIN_API_BASE_URL?.includes('api-uat.ghin.com') ? 'Staging' : process.env.GHIN_API_BASE_URL?.includes('sandbox') ? 'Sandbox' : 'Unknown';
     logger.info(`🌐 GHIN environment: ${ghinEnvLabel} (${process.env.GHIN_API_BASE_URL})`);
 
-    trackEvent('ApplicationStartup', {
-      port: PORT.toString(),
-      environment: config.env,
-      ghinMode,
-      dbConfigured: String(dbConfigured),
-      secretsLoaded: String(secretStatus.loaded),
-      deploymentVersion: runtimeInfo.deploymentVersion,
-      commitSha: runtimeInfo.commitSha || ''
+    setImmediate(() => {
+      const appInsightsStartedMs = Date.now();
+
+      try {
+        initializeAppInsights();
+        logStartupPhase('appinsights-init-complete', {
+          durationMs: Date.now() - appInsightsStartedMs
+        });
+
+        trackEvent('ApplicationStartup', {
+          port: PORT.toString(),
+          environment: config.env,
+          ghinMode,
+          dbConfigured: String(dbConfigured),
+          secretsLoaded: String(secretStatus.loaded),
+          deploymentVersion: runtimeInfo.deploymentVersion,
+          commitSha: runtimeInfo.commitSha || ''
+        });
+      } catch (error) {
+        logStartupPhase('appinsights-init-failed', {
+          durationMs: Date.now() - appInsightsStartedMs,
+          error: error.message
+        });
+        logger.warn('Application Insights background init failed', { error: error.message });
+      }
     });
   });
 }

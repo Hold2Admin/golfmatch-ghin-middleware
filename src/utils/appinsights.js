@@ -3,10 +3,19 @@
 // Sends request, dependency, and custom event data to Azure
 // ============================================================
 
-const appInsights = require('applicationinsights');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('app-insights');
+let appInsightsModule = null;
+
+function getAppInsightsModule() {
+  if (appInsightsModule) {
+    return appInsightsModule;
+  }
+
+  appInsightsModule = require('applicationinsights');
+  return appInsightsModule;
+}
 
 /**
  * Initialize Application Insights
@@ -23,6 +32,8 @@ function initializeAppInsights() {
   }
 
   try {
+    const appInsights = getAppInsightsModule();
+
     // Setup Application Insights (connection string removes deprecation warning)
     const setupValue = connectionString || instrumentationKey;
     appInsights
@@ -64,7 +75,7 @@ function initializeAppInsights() {
  * @param {Object} measurements
  */
 function trackEvent(eventName, properties = {}, measurements = {}) {
-  const client = appInsights.defaultClient;
+  const client = appInsightsModule?.defaultClient;
   if (!client) return;
 
   try {
@@ -87,7 +98,7 @@ function trackEvent(eventName, properties = {}, measurements = {}) {
  * @param {number} resultCode
  */
 function trackDependency(name, commandName, duration, success, resultCode) {
-  const client = appInsights.defaultClient;
+  const client = appInsightsModule?.defaultClient;
   if (!client) return;
 
   try {
@@ -110,7 +121,7 @@ function trackDependency(name, commandName, duration, success, resultCode) {
  * @param {Object} properties
  */
 function trackException(exception, properties = {}) {
-  const client = appInsights.defaultClient;
+  const client = appInsightsModule?.defaultClient;
   if (!client) return;
 
   try {
@@ -132,7 +143,7 @@ function trackException(exception, properties = {}) {
  * @param {Object} properties
  */
 function trackRequest(name, duration, resultCode, success, properties = {}) {
-  const client = appInsights.defaultClient;
+  const client = appInsightsModule?.defaultClient;
   if (!client) return;
 
   try {
@@ -155,5 +166,5 @@ module.exports = {
   trackDependency,
   trackException,
   trackRequest,
-  getClient: () => appInsights.defaultClient
+  getClient: () => appInsightsModule?.defaultClient || null
 };
