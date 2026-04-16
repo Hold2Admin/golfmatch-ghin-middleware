@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { Worker } = require('worker_threads');
 
 const startupClock = {
   processStartMs: Date.now(),
@@ -30,12 +31,102 @@ const startupDiagnosticsOverride = parseBoolean(process.env.STARTUP_DIAGNOSTICS)
 const startupDiagnosticsEnabled = startupDiagnosticsOverride !== null
   ? startupDiagnosticsOverride
   : (process.env.NODE_ENV || 'development') !== 'development';
+const startupFailFastTimeoutMs = Number(process.env.STARTUP_FAIL_FAST_TIMEOUT_MS || 90000);
+const startupFailFastEnabled = (process.env.NODE_ENV || 'development') !== 'test'
+  && Number.isFinite(startupFailFastTimeoutMs)
+  && startupFailFastTimeoutMs > 0;
+const startupWatchdogState = startupFailFastEnabled ? new Int32Array(new SharedArrayBuffer(4)) : null;
+let startupWatchdog = null;
+
+function noteStartupProgress() {
+  if (!startupWatchdogState) {
+    return;
+  }
+
+  Atomics.store(startupWatchdogState, 0, Math.floor(Date.now() / 1000));
+}
+
+function stopStartupWatchdog() {
+  if (startupWatchdog) {
+    startupWatchdog.terminate().catch(() => {});
+    startupWatchdog = null;
+  }
+}
+
+function startStartupWatchdog() {
+  if (!startupFailFastEnabled || !startupWatchdogState) {
+    return;
+  }
+
+  noteStartupProgress();
+  startupWatchdog = new Worker(`
+    const { workerData } = require('worker_threads');
+    const state = new Int32Array(workerData.sharedBuffer);
+    const timeoutSeconds = Math.max(1, Math.ceil(workerData.timeoutMs / 1000));
+    const checkIntervalMs = Math.min(5000, Math.max(1000, Math.floor(workerData.timeoutMs / 4)));
+    const siteName = workerData.siteName || 'ghin-middleware';
+
+    const timer = setInterval(() => {
+      const lastProgressSeconds = Atomics.load(state, 0);
+      const ageSeconds = Math.floor(Date.now() / 1000) - lastProgressSeconds;
+
+      if (ageSeconds < timeoutSeconds) {
+        return;
+      }
+
+      console.error('[startup-phase]', JSON.stringify({
+        phase: 'startup-fail-fast-timeout',
+        at: new Date().toISOString(),
+        timeoutMs: workerData.timeoutMs,
+        stalledForMs: ageSeconds * 1000,
+        siteName
+      }));
+
+      clearInterval(timer);
+
+      try {
+        process.kill(process.pid, 'SIGTERM');
+      } catch (_) {
+        process.exit(1);
+      }
+    }, checkIntervalMs);
+
+    timer.unref();
+  `, {
+    eval: true,
+    workerData: {
+      sharedBuffer: startupWatchdogState.buffer,
+      timeoutMs: startupFailFastTimeoutMs,
+      siteName: process.env.WEBSITE_SITE_NAME || 'ghin-middleware'
+    }
+  });
+
+  startupWatchdog.unref();
+  startupWatchdog.on('error', (error) => {
+    console.error('[startup-phase]', JSON.stringify({
+      phase: 'startup-watchdog-error',
+      at: new Date().toISOString(),
+      error: error.message
+    }));
+  });
+
+  if (startupDiagnosticsEnabled) {
+    console.log('[startup-phase]', JSON.stringify({
+      phase: 'startup-watchdog-start',
+      at: new Date().toISOString(),
+      elapsedMs: getStartupElapsedMs(),
+      timeoutMs: startupFailFastTimeoutMs
+    }));
+  }
+}
 
 function getStartupElapsedMs() {
   return Date.now() - startupClock.processStartMs;
 }
 
 function logStartupPhase(phase, details = {}) {
+  noteStartupProgress();
+
   if (!startupDiagnosticsEnabled) {
     return;
   }
@@ -53,6 +144,7 @@ logStartupPhase('node-entry', {
   pid: process.pid,
   nodeVersion: process.version
 });
+startStartupWatchdog();
 
 function safeStat(targetPath) {
   try {
@@ -100,9 +192,18 @@ function logStartupRequireFailure(moduleName, error) {
 }
 
 function safeRequire(moduleName) {
+  logStartupPhase('require-start', { moduleName });
+
   try {
-    return require(moduleName);
+    const loadedModule = require(moduleName);
+    logStartupPhase('require-complete', { moduleName });
+    return loadedModule;
   } catch (error) {
+    logStartupPhase('require-failed', {
+      moduleName,
+      error: error.message,
+      errorCode: error.code || null
+    });
     logStartupRequireFailure(moduleName, error);
     throw error;
   }
@@ -123,6 +224,8 @@ const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
 const { getRuntimeInfo } = safeRequire('./utils/runtimeInfo');
+
+logStartupPhase('module-load-complete');
 
 async function initializeSecrets() {
   if (process.env.NODE_ENV === 'test') {
@@ -148,6 +251,8 @@ async function initializeSecrets() {
 
 const app = express();
 const logger = createLogger('app');
+
+logStartupPhase('app-created');
 
 function isWebhookRequest(req) {
   return typeof req.path === 'string' && req.path.startsWith('/api/v1/webhooks/');
@@ -396,6 +501,7 @@ async function bootstrap() {
       schedulerInitDurationMs: Date.now() - schedulerStartedMs,
       uptimeSeconds: Number(process.uptime().toFixed(3))
     });
+    stopStartupWatchdog();
 
     logger[startupDiagnosticsEnabled ? 'info' : 'debug']('Startup summary', {
       port: PORT,
@@ -425,6 +531,7 @@ async function bootstrap() {
 }
 
 bootstrap().catch((error) => {
+  stopStartupWatchdog();
   logger.error('Startup failed', { error: error.message, stack: error.stack });
   process.exit(1);
 });
