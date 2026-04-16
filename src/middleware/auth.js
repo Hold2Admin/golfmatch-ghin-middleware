@@ -7,6 +7,15 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('auth-middleware');
 
+function getUserAgent(req) {
+  return req.get('user-agent') || null;
+}
+
+function isPlatformProbe(req) {
+  const userAgent = (getUserAgent(req) || '').toLowerCase();
+  return userAgent.includes('healthcheck/1.0') || userAgent.includes('alwayson');
+}
+
 /**
  * API Key Authentication Middleware
  * - Validates X-API-Key header
@@ -23,14 +32,15 @@ function apiKeyAuth(req, res, next) {
     method: req.method,
     hasApiKey: !!apiKey,
     ip: req.ip,
-    userAgent: req.get('user-agent')
+    userAgent: getUserAgent(req)
   });
 
   // Check if API key is present
   if (!apiKey) {
-    logger.warn('Missing API key', {
+    logger[isPlatformProbe(req) ? 'debug' : 'warn']('Missing API key', {
       path: req.path,
-      ip: req.ip
+      ip: req.ip,
+      userAgent: getUserAgent(req)
     });
     return res.status(401).json({
       error: {
@@ -44,9 +54,10 @@ function apiKeyAuth(req, res, next) {
   const isValid = constantTimeCompare(apiKey, expectedKey);
 
   if (!isValid) {
-    logger.warn('Invalid API key', {
+    logger[isPlatformProbe(req) ? 'debug' : 'warn']('Invalid API key', {
       path: req.path,
       ip: req.ip,
+      userAgent: getUserAgent(req),
       keyLength: apiKey.length
     });
     return res.status(403).json({

@@ -15,15 +15,25 @@ const logFormat = winston.format.combine(
 );
 
 function createLogger(module) {
+  const useColor = Boolean(process.stdout.isTTY) && process.env.NO_COLOR !== '1';
+  const consoleFormats = [
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' })
+  ];
+
+  if (useColor) {
+    consoleFormats.push(winston.format.colorize());
+  }
+
+  consoleFormats.push(
+    winston.format.printf(({ timestamp, level, message, module, ...meta }) => {
+      const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : '';
+      return `${timestamp} [${module}] ${level}: ${message} ${metaStr}`;
+    })
+  );
+
   const transports = [
     new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.printf(({ timestamp, level, message, module, ...meta }) => {
-          const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : '';
-          return `${timestamp} [${module}] ${level}: ${message} ${metaStr}`;
-        })
-      )
+      format: winston.format.combine(...consoleFormats)
     })
   ];
 

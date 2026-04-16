@@ -6,10 +6,6 @@ const logger = createLogger('reconciliationScheduler');
 const MAX_TIMEOUT_MS = 2147483647;
 const CENTRAL_TIMEZONE = 'America/Chicago';
 const FIXED_SCHEDULE_MODE = 'first-sunday-2am-central';
-const startupLogMethod = process.env.STARTUP_DIAGNOSTICS === 'true'
-  || ((process.env.NODE_ENV || 'development') !== 'development' && process.env.STARTUP_DIAGNOSTICS !== 'false')
-  ? 'info'
-  : 'debug';
 
 let timer = null;
 let inFlight = false;
@@ -156,7 +152,7 @@ function startReconciliationScheduler() {
   nextRunAtMs = initialRun.utc.toMillis();
   scheduleForTarget(nextRunAtMs, tick);
 
-  logger[startupLogMethod]('Reconciliation scheduler started', {
+  logger.debug('Reconciliation scheduler started', {
     mode: FIXED_SCHEDULE_MODE,
     timezone: CENTRAL_TIMEZONE,
     nextRunAtUtc: initialRun.utc.toISO(),

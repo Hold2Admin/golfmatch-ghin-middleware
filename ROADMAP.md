@@ -1,7 +1,7 @@
 # GolfMatch GHIN Middleware — Roadmap
 
-**Last Updated:** April 14, 2026  
-**Status:** Runtime read-path cutover, webhook/reconciliation automation, score posting/readback, staging webhook ingress, and inbox-driven GPA approval are validated. Unknown-coverage catalog fill now has an explicit all-states delta-check execution path, while stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate.
+**Last Updated:** April 16, 2026  
+**Status:** Runtime read-path cutover, webhook/reconciliation automation, score posting/readback, staging webhook ingress, and inbox-driven GPA approval are validated. Unknown-coverage catalog fill now has an explicit all-states delta-check execution path, while stage 1 CacheDB writer redesign remains deferred future scaling work rather than the current gate. Production middleware is now isolated on a dedicated Linux App Service plan, `ASP-RGGolfMatch-ghin-middleware-s1` (`Standard S1`), after the old shared-plan startup instability was retired.
 
 ---
 
@@ -94,6 +94,7 @@ Golf Match should:
 5. CacheDB -> GolfDB bulk projection stays as the stage 2 model.
 6. Bulk stage 1 CacheDB writer redesign is deferred scaling work, not the current release gate.
 7. Player caching/live handicap pulls are intentionally deferred until after the current staging-readiness path and evidence capture are complete.
+8. Production middleware hosting is now a dedicated-plan concern, not a shared-plan concern with `golfmatch-api` and `golfmatch-web`.
 
 ---
 

@@ -1060,38 +1060,42 @@ The private native App Service deploy flow above is now the active deployment mo
 
 **Decision:** Middleware-api now deploys through the private native App Service path; blob-backed Run From Package is retired as the primary workflow.
 
-### Verified Current-State Facts For Middleware Deployment (Mar 28, 2026)
+### Verified Current-State Facts For Middleware Deployment (Apr 16, 2026)
 
-These facts were re-checked directly before freezing the deployment recommendation.
+These facts were re-checked directly after the middleware isolation move and startup verification.
 
-1. **App Service plan:** `ASP-RGGolfMatch-b012`
-2. **Plan tier:** `Basic B1`
-3. **Deployment slots:** none currently configured
-4. **Slot implication:** slot-based staging/swap is **not available on the current tier** and should be treated as a later enhancement after upgrading the plan tier
-5. **Middleware private endpoint:** `pe-ghin-middleware`
-6. **Middleware private endpoint subnet:** `vnet-golfmatch/subnet-appservice-pe`
-7. **Middleware private endpoint subresource currently configured:** `sites`
-8. **Private DNS zone group:** `default` is attached to `privatelink.azurewebsites.net` on `pe-ghin-middleware`
-9. **Private DNS records now present:** both `golfmatch-ghin-middleware` and `golfmatch-ghin-middleware.scm` resolve to the middleware private endpoint IP in `privatelink.azurewebsites.net`
-10. **Private SCM reachability is now proven from inside the VNet:** `diag-vm-sql-pe` resolves `golfmatch-ghin-middleware.scm.azurewebsites.net` privately and receives the expected `401 Basic realm="site"` challenge from the SCM endpoint
-11. **Self-hosted runner registration is complete:** `diag-vm-sql-pe` is registered to `Hold2Admin/golfmatch-ghin-middleware` with label `middleware-vnet`
-12. **Runner tooling is installed:** Azure CLI and `jq` are present on `diag-vm-sql-pe` for the private deploy workflow
+1. **App Service plan:** `ASP-RGGolfMatch-ghin-middleware-s1`
+2. **Plan tier:** `Standard S1`
+3. **Plan isolation:** middleware is no longer hosted on the shared `ASP-RGGolfMatch-b012` plan with `golfmatch-api` and `golfmatch-web`
+4. **Operational outcome:** moving middleware onto the dedicated S1 plan produced a clean restart and healthy `/api/v1/health` response on the new plan
+5. **Deployment slots:** none currently configured
+6. **Slot implication:** the service is now on a slot-capable tier, but slots are not yet configured and should be added deliberately as a separate hardening step
+7. **Middleware private endpoint:** `pe-ghin-middleware`
+8. **Middleware private endpoint subnet:** `vnet-golfmatch/subnet-appservice-pe`
+9. **Middleware private endpoint subresource currently configured:** `sites`
+10. **Private DNS zone group:** `default` is attached to `privatelink.azurewebsites.net` on `pe-ghin-middleware`
+11. **Private DNS records now present:** both `golfmatch-ghin-middleware` and `golfmatch-ghin-middleware.scm` resolve to the middleware private endpoint IP in `privatelink.azurewebsites.net`
+12. **Regional VNet integration:** middleware was detached and reattached during the plan move; it is currently restored on the dedicated plan against `vnet-golfmatch/subnet-appservice`
+13. **Private SCM reachability is now proven from inside the VNet:** `diag-vm-sql-pe` resolves `golfmatch-ghin-middleware.scm.azurewebsites.net` privately and receives the expected `401 Basic realm="site"` challenge from the SCM endpoint
+14. **Self-hosted runner registration is complete:** `diag-vm-sql-pe` is registered to `Hold2Admin/golfmatch-ghin-middleware` with label `middleware-vnet`
+15. **Runner tooling is installed:** Azure CLI and `jq` are present on `diag-vm-sql-pe` for the private deploy workflow
 
 ### Implementation Sequence (Production-Safe)
 
 1. Push to `main` to trigger the hosted build plus private deploy sequence.
 2. Use `workflow_dispatch` on the same workflow when you need a manual redeploy without a new commit.
 3. Verify private `/api/v1/health` plus deployment identity markers after each deployment.
-4. After the middleware deploy path is stable, upgrade to a slot-capable tier and add `staging -> health verify -> swap` as phase 2.
+4. After the middleware deploy path is stable on the dedicated S1 plan, add `staging -> health verify -> swap` as phase 2.
 
 ### Near-Term Deployment Standard
 
-Until the App Service plan is upgraded beyond `Basic B1`, the recommended middleware deployment standard is:
+With middleware now isolated on its own `Standard S1` plan, the recommended deployment standard is:
 
 1. build/test/package on GitHub-hosted runner
 2. deploy from self-hosted VNet runner using native App Service deploy
 3. verify private `/api/v1/health` and deployment identity markers
-4. rollback by redeploying the prior known-good artifact
+4. add deployment slots only as an explicit follow-up hardening change, not as an undocumented side effect of the plan move
+5. rollback by redeploying the prior known-good artifact
 
 ---
 

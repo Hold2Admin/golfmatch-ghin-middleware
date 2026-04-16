@@ -2,8 +2,6 @@
 // GHIN Middleware API - Entry Point
 // ============================================================
 
-const fs = require('fs');
-const path = require('path');
 const { Worker } = require('worker_threads');
 
 const startupClock = {
@@ -27,10 +25,7 @@ function parseBoolean(value) {
   return null;
 }
 
-const startupDiagnosticsOverride = parseBoolean(process.env.STARTUP_DIAGNOSTICS);
-const startupDiagnosticsEnabled = startupDiagnosticsOverride !== null
-  ? startupDiagnosticsOverride
-  : (process.env.NODE_ENV || 'development') !== 'development';
+const startupDiagnosticsEnabled = parseBoolean(process.env.STARTUP_DIAGNOSTICS) === true;
 const startupFailFastTimeoutMs = Number(process.env.STARTUP_FAIL_FAST_TIMEOUT_MS || 90000);
 const startupFailFastEnabled = (process.env.NODE_ENV || 'development') !== 'test'
   && Number.isFinite(startupFailFastTimeoutMs)
@@ -74,8 +69,8 @@ function startStartupWatchdog() {
         return;
       }
 
-      console.error('[startup-phase]', JSON.stringify({
-        phase: 'startup-fail-fast-timeout',
+      console.error('[startup]', JSON.stringify({
+        phase: 'fail-fast-timeout',
         at: new Date().toISOString(),
         timeoutMs: workerData.timeoutMs,
         stalledForMs: ageSeconds * 1000,
@@ -103,21 +98,12 @@ function startStartupWatchdog() {
 
   startupWatchdog.unref();
   startupWatchdog.on('error', (error) => {
-    console.error('[startup-phase]', JSON.stringify({
-      phase: 'startup-watchdog-error',
+    console.error('[startup]', JSON.stringify({
+      phase: 'watchdog-error',
       at: new Date().toISOString(),
       error: error.message
     }));
   });
-
-  if (startupDiagnosticsEnabled) {
-    console.log('[startup-phase]', JSON.stringify({
-      phase: 'startup-watchdog-start',
-      at: new Date().toISOString(),
-      elapsedMs: getStartupElapsedMs(),
-      timeoutMs: startupFailFastTimeoutMs
-    }));
-  }
 }
 
 function getStartupElapsedMs() {
@@ -131,7 +117,7 @@ function logStartupPhase(phase, details = {}) {
     return;
   }
 
-  console.log('[startup-phase]', JSON.stringify({
+  console.log('[startup]', JSON.stringify({
     phase,
     at: new Date().toISOString(),
     elapsedMs: getStartupElapsedMs(),
@@ -146,64 +132,27 @@ logStartupPhase('node-entry', {
 });
 startStartupWatchdog();
 
-function safeStat(targetPath) {
-  try {
-    const stats = fs.statSync(targetPath);
-    return {
-      exists: true,
-      isDirectory: stats.isDirectory(),
-      size: stats.size
-    };
-  } catch {
-    return { exists: false };
-  }
-}
-
-function listEntries(targetPath, limit = 20) {
-  try {
-    return fs.readdirSync(targetPath).slice(0, limit);
-  } catch (error) {
-    return [`<unavailable: ${error.message}>`];
-  }
-}
-
 function logStartupRequireFailure(moduleName, error) {
-  const appRoot = path.resolve(__dirname, '..');
-  const nodeModulesPath = path.join(appRoot, 'node_modules');
-  const expressPackagePath = path.join(nodeModulesPath, 'express', 'package.json');
   const diagnostics = {
     moduleName,
     errorMessage: error.message,
     errorCode: error.code,
     nodeVersion: process.version,
     cwd: process.cwd(),
-    dirname: __dirname,
-    appRoot,
-    entrypoint: __filename,
-    packageJson: safeStat(path.join(appRoot, 'package.json')),
-    nodeModules: safeStat(nodeModulesPath),
-    expressPackage: safeStat(expressPackagePath),
-    resolvePaths: typeof require.resolve.paths === 'function' ? require.resolve.paths(moduleName) : null,
-    appRootEntries: listEntries(appRoot),
-    srcEntries: listEntries(__dirname)
+    dirname: __dirname
   };
 
-  console.error('[startup] module resolution failure', JSON.stringify(diagnostics, null, 2));
+  console.error('[startup]', JSON.stringify({
+    phase: 'module-load-failed',
+    at: new Date().toISOString(),
+    ...diagnostics
+  }));
 }
 
 function safeRequire(moduleName) {
-  logStartupPhase('require-start', { moduleName });
-
   try {
-    const loadedModule = require(moduleName);
-    logStartupPhase('require-complete', { moduleName });
-    return loadedModule;
+    return require(moduleName);
   } catch (error) {
-    logStartupPhase('require-failed', {
-      moduleName,
-      error: error.message,
-      errorCode: error.code || null
-    });
     logStartupRequireFailure(moduleName, error);
     throw error;
   }
@@ -224,8 +173,6 @@ const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
 const { getRuntimeInfo } = safeRequire('./utils/runtimeInfo');
-
-logStartupPhase('module-load-complete');
 
 async function initializeSecrets() {
   if (process.env.NODE_ENV === 'test') {
@@ -252,7 +199,17 @@ async function initializeSecrets() {
 const app = express();
 const logger = createLogger('app');
 
-logStartupPhase('app-created');
+function getGhinEnvironmentLabel() {
+  if (process.env.GHIN_API_BASE_URL?.includes('api-uat.ghin.com')) {
+    return 'Staging';
+  }
+
+  if (process.env.GHIN_API_BASE_URL?.includes('sandbox')) {
+    return 'Sandbox';
+  }
+
+  return 'Unknown';
+}
 
 function isWebhookRequest(req) {
   return typeof req.path === 'string' && req.path.startsWith('/api/v1/webhooks/');
@@ -416,21 +373,7 @@ async function bootstrap() {
     return;
   }
 
-  logStartupPhase('bootstrap-start', {
-    environment: config.env,
-    port: PORT
-  });
-
-  const secretsLoadStartedMs = Date.now();
-  logStartupPhase('secrets-load-start');
-
   const secretStatus = await initializeSecrets();
-  logStartupPhase('secrets-load-complete', {
-    durationMs: Date.now() - secretsLoadStartedMs,
-    loaded: secretStatus.loaded,
-    source: secretStatus.source,
-    usedWarningFallback: Boolean(secretStatus.warning)
-  });
 
   if (secretStatus.warning) {
     logger.warn('Secrets loader fallback in use', { warning: secretStatus.warning });
@@ -438,87 +381,60 @@ async function bootstrap() {
 
   // Lazy-initialize optional services in background (do not block readiness).
   setImmediate(async () => {
-    logStartupPhase('background-service-init-start', {
-      databaseConfigured: Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME),
-      redisConfigured: Boolean(config.redis.host)
-    });
-
-    const dbConnectStartedMs = Date.now();
     try {
       await database.connect();
-      logStartupPhase('background-database-connect-complete', {
-        durationMs: Date.now() - dbConnectStartedMs
-      });
     } catch (error) {
-      logStartupPhase('background-database-connect-failed', {
-        durationMs: Date.now() - dbConnectStartedMs,
-        error: error.message
-      });
       logger.warn('Database background connect failed', { error: error.message });
     }
 
     if (config.redis.host) {
-      const redisConnectStartedMs = Date.now();
       try {
         await redis.connect();
-        logStartupPhase('background-redis-connect-complete', {
-          durationMs: Date.now() - redisConnectStartedMs
-        });
       } catch (error) {
-        logStartupPhase('background-redis-connect-failed', {
-          durationMs: Date.now() - redisConnectStartedMs,
-          error: error.message
-        });
         logger.warn('Redis background connect failed', { error: error.message });
       }
-    } else {
-      logStartupPhase('background-redis-skip', {
-        reason: 'not-configured'
-      });
     }
   });
 
   const listenBindStartedMs = Date.now();
-  logStartupPhase('listen-bind-start', { port: PORT });
 
   app.listen(PORT, () => {
     const ghinMode = config.ghin.useMock ? 'MOCK' : 'LIVE';
     const dbConfigured = Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME);
-    const schedulerStartedMs = Date.now();
     const reconciliationScheduler = startReconciliationScheduler();
     const runtimeInfo = getRuntimeInfo();
+    const startupDurationMs = getStartupElapsedMs();
+    const bindDurationMs = Date.now() - listenBindStartedMs;
 
     logStartupPhase('listen-ready', {
       port: PORT,
-      bindDurationMs: Date.now() - listenBindStartedMs,
-      schedulerInitDurationMs: Date.now() - schedulerStartedMs,
+      bindDurationMs,
       uptimeSeconds: Number(process.uptime().toFixed(3))
     });
     stopStartupWatchdog();
 
-    logger[startupDiagnosticsEnabled ? 'info' : 'debug']('Startup summary', {
+    logger.debug('Startup details', {
       port: PORT,
       environment: config.env,
       ghinMode,
+      ghinEnvironment: getGhinEnvironmentLabel(),
+      ghinApiBaseUrl: process.env.GHIN_API_BASE_URL,
+      startupDurationMs,
+      bindDurationMs,
       dbConfigured,
       redisConfigured: Boolean(config.redis.host),
       secretsLoaded: secretStatus.loaded,
       secretsSource: secretStatus.source,
-      reconciliationScheduler,
+      reconciliationSchedulerEnabled: Boolean(reconciliationScheduler?.enabled),
+      nextReconciliationRunAtUtc: reconciliationScheduler?.nextRunAtUtc || null,
       deployment: runtimeInfo
     });
     logger.info(`✅ GHIN Middleware API listening on port ${PORT}`);
-    const ghinEnvLabel = process.env.GHIN_API_BASE_URL?.includes('api-uat.ghin.com') ? 'Staging' : process.env.GHIN_API_BASE_URL?.includes('sandbox') ? 'Sandbox' : 'Unknown';
-    logger.info(`🌐 GHIN environment: ${ghinEnvLabel} (${process.env.GHIN_API_BASE_URL})`);
+    logger.info(`🌐 GHIN environment: ${getGhinEnvironmentLabel()} (${process.env.GHIN_API_BASE_URL})`);
 
     setImmediate(() => {
-      const appInsightsStartedMs = Date.now();
-
       try {
         initializeAppInsights();
-        logStartupPhase('appinsights-init-complete', {
-          durationMs: Date.now() - appInsightsStartedMs
-        });
 
         trackEvent('ApplicationStartup', {
           port: PORT.toString(),
@@ -530,10 +446,6 @@ async function bootstrap() {
           commitSha: runtimeInfo.commitSha || ''
         });
       } catch (error) {
-        logStartupPhase('appinsights-init-failed', {
-          durationMs: Date.now() - appInsightsStartedMs,
-          error: error.message
-        });
         logger.warn('Application Insights background init failed', { error: error.message });
       }
     });

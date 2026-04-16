@@ -8,6 +8,31 @@ const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('request-tracking');
 
+function getUserAgent(req) {
+  return req.get('user-agent') || null;
+}
+
+function isPlatformProbe(req) {
+  const userAgent = (getUserAgent(req) || '').toLowerCase();
+  return userAgent.includes('healthcheck/1.0') || userAgent.includes('alwayson');
+}
+
+function getRequestLogLevel(req, statusCode) {
+  if (statusCode >= 500) {
+    return 'error';
+  }
+
+  if (statusCode >= 400) {
+    return isPlatformProbe(req) ? 'debug' : 'warn';
+  }
+
+  if (isPlatformProbe(req)) {
+    return 'debug';
+  }
+
+  return 'info';
+}
+
 /**
  * Add correlation ID to all requests
  * Allows tracing a request across all logs and services
@@ -36,15 +61,13 @@ function addCorrelationId(req, res, next) {
  */
 function trackRequestMetrics(req, res, next) {
   const startTime = Date.now();
-  const startMemory = process.memoryUsage().heapUsed;
 
   // Track when response is sent
   const originalSend = res.send;
   res.send = function(data) {
     const duration = Date.now() - startTime;
-    const memoryUsed = process.memoryUsage().heapUsed - startMemory;
 
-    logger.info('Request completed', {
+    logger[getRequestLogLevel(req, res.statusCode)]('Request completed', {
       correlationId: req.correlationId,
       method: req.method,
       path: req.path,
@@ -52,7 +75,7 @@ function trackRequestMetrics(req, res, next) {
       duration: `${duration}ms`,
       contentLength: res.get('content-length') || 'unknown',
       ip: req.ip,
-      userAgent: req.get('user-agent')
+      userAgent: getUserAgent(req)
     });
 
     // Call original send

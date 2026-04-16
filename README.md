@@ -150,6 +150,8 @@ npm test -- --coverage
 
 Deployed via GitHub Actions to Azure App Service.
 
+Production middleware now runs on its own dedicated Linux App Service plan, `ASP-RGGolfMatch-ghin-middleware-s1` (`Standard S1`), instead of sharing the old `ASP-RGGolfMatch-b012` `Basic B1` plan with `golfmatch-api` and `golfmatch-web`. That dedicated-plan move is now part of the authoritative production architecture, not a temporary workaround.
+
 Pushes to `main` deploy automatically with a unique package blob and deployment version. The running deployment identity is exposed at `/api/v1/health` and `/` so you can verify which package actually booted.
 
 See `.github/workflows/deploy-middleware.yml` for CI/CD pipeline.
