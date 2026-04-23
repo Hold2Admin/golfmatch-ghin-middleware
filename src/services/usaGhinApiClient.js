@@ -96,12 +96,16 @@ const ALLOWLIST = [
   { method: 'GET',  pattern: /^\/golfers\/\d+\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/search\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/\d+\.json$/ },
+  { method: 'GET',  pattern: /^\/Courses\/[^/]+\/TeeSetRatingsForScorePosting\.json$/ },
   { method: 'GET',  pattern: /^\/users\/accesses\.json$/ },
   { method: 'POST', pattern: /^\/scores\/hbh\.json$/ },
   { method: 'POST', pattern: /^\/scores\/adjusted\.json$/ },
   { method: 'POST', pattern: /^\/scores\.json$/ },
   { method: 'GET',  pattern: /^\/scores\/search\.json$/ },
   { method: 'GET',  pattern: /^\/scores\/[^/]+\.json$/ },
+  { method: 'GET',  pattern: /^\/course_handicaps\.json$/ },
+  { method: 'POST', pattern: /^\/manual_course_handicap\.json$/ },
+  { method: 'POST', pattern: /^\/playing_handicaps\.json$/ },
   { method: 'POST', pattern: /^\/users\/golfers\/\d+\/request_golfer_product_access\.json$/ },
   { method: 'POST', pattern: /^\/users\/\d+\/golfers\/\d+\/update_golfer_product_access_status\.json$/ },
   { method: 'DELETE', pattern: /^\/users\/golfers\/\d+\/revoke_golfer_product_access\.json$/ },
@@ -370,6 +374,68 @@ async function getCoursePostingSeason(courseId) {
   return _normalizeCoursePostingSeason(data, String(courseId));
 }
 
+function _normalizePostingHoleCount(value) {
+  const parsed = Number(value);
+  return parsed === 9 ? 9 : 18;
+}
+
+function _normalizePostingGender(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (normalized === 'W' || normalized === 'F') return 'F';
+  return 'M';
+}
+
+function _normalizePostingRatingType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'front') return 'Front';
+  if (normalized === 'back') return 'Back';
+  return 'Total';
+}
+
+function _normalizePostingTeeSetSide(ratingType) {
+  if (ratingType === 'Front') return 'F9';
+  if (ratingType === 'Back') return 'B9';
+  return 'All18';
+}
+
+function _normalizeCourseTeePostingRow(row) {
+  const ratingType = _normalizePostingRatingType(row?.RatingType);
+  return {
+    teeSetRatingId: row?.TeeSetRatingId != null ? String(row.TeeSetRatingId) : null,
+    teeSetStatus: row?.TeeSetStatus ?? null,
+    displayName: row?.DisplayName ?? null,
+    gender: _normalizePostingGender(row?.Gender),
+    teeSetRatingName: row?.TeeSetRatingName ?? null,
+    legacyCrpTeeId: row?.LegacyCRPTeeId != null ? String(row.LegacyCRPTeeId) : null,
+    ratingType,
+    teeSetSide: _normalizePostingTeeSetSide(ratingType),
+    courseRating: row?.CourseRating ?? null,
+    slopeRating: row?.SlopeRating ?? null,
+    bogeyRating: row?.BogeyRating ?? null,
+    strokeAllocation: typeof row?.StrokeAllocation === 'boolean' ? row.StrokeAllocation : null,
+    totalPar: row?.TotalPar ?? null,
+  };
+}
+
+async function getCourseTeePostingEligibility(courseId, options = {}) {
+  const normalizedCourseId = String(courseId || '').trim();
+  if (!normalizedCourseId) {
+    throw new Error('courseId is required');
+  }
+
+  const data = await request(
+    'GET',
+    `/Courses/${encodeURIComponent(normalizedCourseId)}/TeeSetRatingsForScorePosting.json`,
+    {
+      gender: _normalizePostingGender(options.gender),
+      number_of_holes: _normalizePostingHoleCount(options.numberOfHoles),
+      tee_set_status: String(options.teeSetStatus || 'Active').trim() || 'Active'
+    }
+  );
+
+  return Array.isArray(data) ? data.map(_normalizeCourseTeePostingRow) : [];
+}
+
 /**
  * Search courses using USGA courses/search endpoint.
  * Returns normalized lightweight results.
@@ -534,6 +600,161 @@ async function getScore(scoreId) {
   }
 
   return request('GET', `/scores/${encodeURIComponent(normalizedScoreId)}.json`);
+}
+
+function _normalizeSupportingTeeSetSide(value) {
+  const normalized = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (normalized === 'F9') return 'F9';
+  if (normalized === 'B9') return 'B9';
+  return 'All18';
+}
+
+function _normalizeSupportingPlayingTeeSetSide(value) {
+  const normalized = _normalizeSupportingTeeSetSide(value);
+  return normalized === 'All18' ? 'All 18' : normalized;
+}
+
+function _normalizeCourseHandicapTeeSet(row) {
+  return {
+    teeSetId: row?.tee_set_id != null ? String(row.tee_set_id) : null,
+    name: row?.name ?? null,
+    gender: row?.gender ?? null,
+    ratings: Array.isArray(row?.ratings)
+      ? row.ratings.map((rating) => ({
+          teeSetSide: _normalizeSupportingTeeSetSide(rating?.tee_set_side),
+          courseRating: Number.isFinite(Number(rating?.course_rating)) ? Number(rating.course_rating) : null,
+          slopeRating: Number.isFinite(Number(rating?.slope_rating)) ? Number(rating.slope_rating) : null,
+          courseHandicap: Number.isFinite(Number(rating?.course_handicap)) ? Number(rating.course_handicap) : null,
+          courseHandicapDisplay: rating?.course_handicap_display != null ? String(rating.course_handicap_display) : null,
+          par: Number.isFinite(Number(rating?.par)) ? Number(rating.par) : null,
+        }))
+      : []
+  };
+}
+
+async function getCourseHandicaps(params = {}) {
+  const courseId = String(params.courseId || '').trim();
+  const golferId = params.golferId != null ? String(params.golferId).trim() : '';
+  const handicapIndex = params.handicapIndex != null ? String(params.handicapIndex).trim() : '';
+
+  if (!courseId) {
+    throw new Error('courseId is required');
+  }
+  if (!golferId && !handicapIndex) {
+    throw new Error('golferId or handicapIndex is required');
+  }
+
+  const data = await request('GET', '/course_handicaps.json', {
+    course_id: courseId,
+    golfer_id: golferId || undefined,
+    handicap_index: handicapIndex || undefined,
+    played_at: params.playedAt || undefined,
+  });
+
+  return Array.isArray(data?.tee_sets)
+    ? data.tee_sets.map(_normalizeCourseHandicapTeeSet)
+    : [];
+}
+
+function _normalizeManualCourseHandicapResponse(data) {
+  const course = data?.manual_course_handicap ?? null;
+  const playing = data?.manual_playing_handicap ?? null;
+
+  return {
+    courseHandicap: Number.isFinite(Number(course?.course_handicap)) ? Number(course.course_handicap) : null,
+    courseHandicapDisplay: course?.course_handicap_display != null ? String(course.course_handicap_display) : null,
+    playingHandicap: Number.isFinite(Number(playing?.playing_handicap)) ? Number(playing.playing_handicap) : null,
+    playingHandicapDisplay: playing?.playing_handicap_display != null ? String(playing.playing_handicap_display) : null,
+  };
+}
+
+async function getManualCourseHandicap(params = {}) {
+  const golferId = params.golferId != null ? String(params.golferId).trim() : '';
+  const handicapIndex = params.handicapIndex != null ? String(params.handicapIndex).trim() : '';
+  const courseRating = params.courseRating != null ? String(params.courseRating).trim() : '';
+  const slopeRating = params.slopeRating != null ? String(params.slopeRating).trim() : '';
+  const par = params.par != null ? String(params.par).trim() : '';
+  const numberOfHoles = params.numberOfHoles != null ? String(params.numberOfHoles).trim() : '';
+
+  if (!golferId && !handicapIndex) {
+    throw new Error('golferId or handicapIndex is required');
+  }
+  if (!courseRating || !slopeRating || !par) {
+    throw new Error('courseRating, slopeRating, and par are required');
+  }
+
+  const data = await request('POST', '/manual_course_handicap.json', {
+    golfer_id: golferId || undefined,
+    handicap_index: handicapIndex || undefined,
+    course_rating: courseRating,
+    slope_rating: slopeRating,
+    par,
+    number_of_holes: numberOfHoles || undefined,
+    handicap_allowance: params.handicapAllowance != null ? String(params.handicapAllowance).trim() : undefined,
+  });
+
+  return _normalizeManualCourseHandicapResponse(data);
+}
+
+function _normalizePlayingHandicapAllowanceRow(allowanceKey, allowanceData, requestGolfers = []) {
+  const normalizedAllowance = Number(allowanceKey);
+  const golferEntries = requestGolfers.map((golfer, index) => {
+    const expectedKey = golfer?.golfer_id != null
+      ? String(golfer.golfer_id)
+      : `manual_golfer_${index + 1}`;
+    const row = allowanceData?.[expectedKey] || null;
+    return {
+      key: expectedKey,
+      golferId: golfer?.golfer_id != null ? String(golfer.golfer_id) : null,
+      handicapIndex: golfer?.handicap_index != null ? String(golfer.handicap_index) : null,
+      teeSetId: golfer?.tee_set_id != null ? String(golfer.tee_set_id) : null,
+      teeSetSide: _normalizeSupportingTeeSetSide(golfer?.tee_set_side),
+      playingHandicap: Number.isFinite(Number(row?.playing_handicap)) ? Number(row.playing_handicap) : null,
+      playingHandicapDisplay: row?.playing_handicap_display != null ? String(row.playing_handicap_display) : null,
+      shotsOff: row?.shots_off != null ? String(row.shots_off) : null,
+    };
+  });
+
+  return {
+    allowance: Number.isFinite(normalizedAllowance) ? normalizedAllowance : allowanceKey,
+    golfers: golferEntries,
+  };
+}
+
+async function getPlayingHandicaps(golfers = []) {
+  if (!Array.isArray(golfers) || golfers.length === 0) {
+    throw new Error('At least one golfer payload is required');
+  }
+
+  const payloadGolfers = golfers.map((golfer) => {
+    const normalized = {
+      tee_set_id: golfer?.teeSetId != null ? String(golfer.teeSetId).trim() : golfer?.tee_set_id != null ? String(golfer.tee_set_id).trim() : null,
+      tee_set_side: _normalizeSupportingPlayingTeeSetSide(golfer?.teeSetSide ?? golfer?.tee_set_side),
+    };
+
+    if (!normalized.tee_set_id) {
+      throw new Error('Each golfer must include teeSetId');
+    }
+
+    if (golfer?.golferId != null || golfer?.golfer_id != null) {
+      normalized.golfer_id = String(golfer.golferId ?? golfer.golfer_id).trim();
+    } else if (golfer?.handicapIndex != null || golfer?.handicap_index != null) {
+      normalized.handicap_index = String(golfer.handicapIndex ?? golfer.handicap_index).trim();
+    } else {
+      throw new Error('Each golfer must include golferId or handicapIndex');
+    }
+
+    return normalized;
+  });
+
+  const data = await request('POST', '/playing_handicaps.json', {
+    golfers: payloadGolfers
+  });
+
+  return Object.entries(data || {})
+    .filter(([key]) => /^\d+$/.test(String(key)))
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([allowanceKey, allowanceData]) => _normalizePlayingHandicapAllowanceRow(allowanceKey, allowanceData, payloadGolfers));
 }
 
 // ============================================================
@@ -824,10 +1045,14 @@ module.exports = {
   searchGolfers,
   getCourse,
   getCoursePostingSeason,
+  getCourseTeePostingEligibility,
   searchCourses,
   postScore,
   searchScores,
   getScore,
+  getCourseHandicaps,
+  getManualCourseHandicap,
+  getPlayingHandicaps,
   requestGolferProductAccess,
   getGolferProductAccessStatus,
   updateGolferProductAccessStatus,

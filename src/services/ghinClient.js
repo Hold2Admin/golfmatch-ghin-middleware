@@ -213,6 +213,36 @@ async function getCoursePostingSeason(ghinCourseId) {
   return usaGhinApiClient.getCoursePostingSeason(ghinCourseId);
 }
 
+async function getCourseTeePostingEligibility(ghinCourseId, options = {}) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] Fetching tee posting eligibility for course ${ghinCourseId}`);
+    return [
+      {
+        teeSetRatingId: String(options.teeSetId || 'mock-tee'),
+        teeSetStatus: 'Active',
+        displayName: options.teeSetSide === 'B9' ? 'Mock Tee - Back 9' : (options.numberOfHoles === 9 ? 'Mock Tee - Front 9' : 'Mock Tee'),
+        gender: String(options.gender || 'M').trim().toUpperCase() === 'F' ? 'F' : 'M',
+        teeSetRatingName: 'Mock Tee',
+        legacyCrpTeeId: String(options.teeSetId || 'mock-tee'),
+        ratingType: options.teeSetSide === 'B9' ? 'Back' : (options.numberOfHoles === 9 ? 'Front' : 'Total'),
+        teeSetSide: options.teeSetSide || (Number(options.numberOfHoles) === 9 ? 'F9' : 'All18'),
+        courseRating: null,
+        slopeRating: null,
+        bogeyRating: null,
+        strokeAllocation: true,
+        totalPar: null,
+      }
+    ];
+  }
+
+  logger.info(`[LIVE] Fetching tee posting eligibility for course ${ghinCourseId} from USGA API source`, {
+    gender: options.gender,
+    numberOfHoles: options.numberOfHoles,
+    teeSetId: options.teeSetId || null,
+  });
+  return usaGhinApiClient.getCourseTeePostingEligibility(ghinCourseId, options);
+}
+
 /**
  * Search for courses
  * @param {Object} params - Search parameters
@@ -315,6 +345,56 @@ async function getScore(scoreId) {
   return usaGhinApiClient.getScore(scoreId);
 }
 
+async function getCourseHandicaps(params = {}) {
+  if (config.ghin.useMock) {
+    logger.info('[MOCK] Fetching course handicaps', params);
+    return [];
+  }
+
+  logger.info('[LIVE] Fetching course handicaps via USGA API', {
+    courseId: params.courseId,
+    golferId: params.golferId || null,
+    handicapIndex: params.handicapIndex || null,
+  });
+  return usaGhinApiClient.getCourseHandicaps(params);
+}
+
+async function getManualCourseHandicap(params = {}) {
+  if (config.ghin.useMock) {
+    logger.info('[MOCK] Fetching manual course handicap', params);
+    return {
+      courseHandicap: null,
+      courseHandicapDisplay: null,
+      playingHandicap: null,
+      playingHandicapDisplay: null,
+    };
+  }
+
+  logger.info('[LIVE] Fetching manual course handicap via USGA API', {
+    golferId: params.golferId || null,
+    handicapIndex: params.handicapIndex || null,
+    courseRating: params.courseRating,
+    slopeRating: params.slopeRating,
+    par: params.par,
+    handicapAllowance: params.handicapAllowance ?? null,
+  });
+  return usaGhinApiClient.getManualCourseHandicap(params);
+}
+
+async function getPlayingHandicaps(golfers = []) {
+  if (config.ghin.useMock) {
+    logger.info('[MOCK] Fetching playing handicaps', {
+      golferCount: Array.isArray(golfers) ? golfers.length : 0,
+    });
+    return [];
+  }
+
+  logger.info('[LIVE] Fetching playing handicaps via USGA API', {
+    golferCount: Array.isArray(golfers) ? golfers.length : 0,
+  });
+  return usaGhinApiClient.getPlayingHandicaps(golfers);
+}
+
 module.exports = {
   getPlayer,
   searchPlayers,
@@ -324,8 +404,12 @@ module.exports = {
   revokeGolferProductAccess,
   getCourse,
   getCoursePostingSeason,
+  getCourseTeePostingEligibility,
   searchCourses,
   postScore,
   searchScores,
-  getScore
+  getScore,
+  getCourseHandicaps,
+  getManualCourseHandicap,
+  getPlayingHandicaps
 };

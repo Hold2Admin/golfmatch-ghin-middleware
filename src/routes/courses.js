@@ -4,7 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { param, body, validationResult } = require('express-validator');
+const { param, body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinCourse, transformGhinTee, transformGhinHole } = require('../services/transformers/courseTransformer');
@@ -68,6 +68,50 @@ function isFuturePlayedAt(playedAt) {
   return playedDate.getTime() > todayUtc.getTime();
 }
 
+function normalizePostingHoleCount(value) {
+  return Number(value) === 9 ? 9 : 18;
+}
+
+function normalizePostingGender(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (normalized === 'W' || normalized === 'F') return 'F';
+  return 'M';
+}
+
+function normalizePostingSide(value, numberOfHoles) {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (numberOfHoles === 9) {
+    return normalized === 'B9' ? 'B9' : 'F9';
+  }
+  return 'All18';
+}
+
+function summarizePostingRows(rows) {
+  return rows.map((row) => ({
+    teeSetRatingId: row.teeSetRatingId,
+    legacyCrpTeeId: row.legacyCrpTeeId,
+    displayName: row.displayName,
+    teeSetRatingName: row.teeSetRatingName,
+    teeSetSide: row.teeSetSide,
+    ratingType: row.ratingType,
+    gender: row.gender,
+  }));
+}
+
+function resolvePostingTeeMatch(rows, requestedTeeSetId) {
+  const normalizedRequestedId = String(requestedTeeSetId || '').trim();
+  if (!normalizedRequestedId) {
+    return { match: null, matchedBy: null };
+  }
+
+  const matchedByTeeSetRatingId = rows.find((row) => row.teeSetRatingId === normalizedRequestedId);
+  if (matchedByTeeSetRatingId) {
+    return { match: matchedByTeeSetRatingId, matchedBy: 'tee_set_rating_id' };
+  }
+
+  return { match: null, matchedBy: null };
+}
+
 /**
  * GET /api/v1/courses/:ghinCourseId
  * Fetch complete course data including all tees and holes
@@ -124,6 +168,78 @@ router.get(
         error: {
           code: error.code || 'GHIN_API_ERROR',
           message: error.message || 'Failed to fetch course posting season',
+          retryable: (error.status || 500) >= 500
+        }
+      });
+    }
+  }
+);
+
+router.get(
+  '/:ghinCourseId/tee-posting-eligibility',
+  [
+    param('ghinCourseId').isString().trim().isLength({ min: 1, max: 100 }).withMessage('Invalid GHIN course ID'),
+    query('tee_set_id').optional().isString().trim().isLength({ min: 1, max: 100 }).withMessage('Invalid tee_set_id'),
+    query('gender').optional().isString().trim().isLength({ min: 1, max: 10 }).withMessage('Invalid gender'),
+    query('number_of_holes').optional().isInt({ min: 9, max: 18 }).withMessage('Invalid number_of_holes'),
+    query('tee_set_side').optional().isString().trim().isLength({ min: 1, max: 10 }).withMessage('Invalid tee_set_side')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid tee posting eligibility request',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinCourseId } = req.params;
+    const requestedTeeSetId = String(req.query.tee_set_id || '').trim() || null;
+    const numberOfHoles = normalizePostingHoleCount(req.query.number_of_holes);
+    const teeSetSide = normalizePostingSide(req.query.tee_set_side, numberOfHoles);
+    const gender = normalizePostingGender(req.query.gender);
+
+    try {
+      const eligibleRows = await ghinClient.getCourseTeePostingEligibility(ghinCourseId, {
+        teeSetId: requestedTeeSetId,
+        gender,
+        numberOfHoles,
+        teeSetStatus: 'Active'
+      });
+      const scopedRows = eligibleRows.filter((row) => row.teeSetSide === teeSetSide);
+      const { match, matchedBy } = resolvePostingTeeMatch(scopedRows, requestedTeeSetId);
+
+      return res.json({
+        success: true,
+        courseId: String(ghinCourseId),
+        requestedTeeSetId,
+        gender,
+        numberOfHoles,
+        teeSetSide,
+        isEligible: Boolean(match),
+        matchedBy,
+        matchedTeeSetId: match?.teeSetRatingId || null,
+        matchedLegacyCrpTeeId: match?.legacyCrpTeeId || null,
+        matchedDisplayName: match?.displayName || null,
+        matchedRatingType: match?.ratingType || null,
+        eligibleTeeSets: summarizePostingRows(scopedRows)
+      });
+    } catch (error) {
+      logger.error('Error fetching tee posting eligibility', {
+        ghinCourseId,
+        requestedTeeSetId,
+        gender,
+        numberOfHoles,
+        teeSetSide,
+        error: error.message
+      });
+      return res.status(error.status || 502).json({
+        error: {
+          code: error.code || 'GHIN_API_ERROR',
+          message: error.message || 'Failed to fetch tee posting eligibility',
           retryable: (error.status || 500) >= 500
         }
       });
