@@ -296,6 +296,7 @@ const playersRouter = require('./routes/players');
 const coursesRouter = require('./routes/courses');
 const scoresRouter = require('./routes/scores');
 const webhooksRouter = require('./routes/webhooks');
+const calculationsRouter = require('./routes/calculations');
 
 app.use('/api/v1/webhooks', webhooksRouter);
 
@@ -327,6 +328,7 @@ app.use('/api/v1/health', healthRouter);
 app.use('/api/v1/players', playersRouter);
 app.use('/api/v1/courses', coursesRouter);
 app.use('/api/v1/scores', scoresRouter);
+app.use('/api/v1/calculations', calculationsRouter);
 
 // Root endpoint
 app.get('/', (req, res) => {
