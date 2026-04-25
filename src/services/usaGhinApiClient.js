@@ -417,23 +417,79 @@ function _normalizeCourseTeePostingRow(row) {
   };
 }
 
+function _buildCourseTeePostingRowKey(row) {
+  return [
+    row?.TeeSetRatingId ?? '',
+    row?.RatingType ?? '',
+    row?.DisplayName ?? '',
+    row?.TotalPar ?? '',
+    Array.isArray(row?.Holes) ? row.Holes.length : ''
+  ].join('|');
+}
+
+function _dedupeCourseTeePostingRows(rows) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const row of rows) {
+    const key = _buildCourseTeePostingRowKey(row);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(row);
+  }
+
+  return deduped;
+}
+
+async function _fetchCourseTeePostingEligibility(courseId, numberOfHoles, teeSetStatus, gender) {
+  const data = await request(
+    'GET',
+    `/Courses/${encodeURIComponent(courseId)}/TeeSetRatingsForScorePosting.json`,
+    {
+      gender,
+      number_of_holes: numberOfHoles,
+      tee_set_status: teeSetStatus
+    }
+  );
+
+  return Array.isArray(data) ? data : [];
+}
+
 async function getCourseTeePostingEligibility(courseId, options = {}) {
   const normalizedCourseId = String(courseId || '').trim();
   if (!normalizedCourseId) {
     throw new Error('courseId is required');
   }
 
-  const data = await request(
-    'GET',
-    `/Courses/${encodeURIComponent(normalizedCourseId)}/TeeSetRatingsForScorePosting.json`,
-    {
-      gender: _normalizePostingGender(options.gender),
-      number_of_holes: _normalizePostingHoleCount(options.numberOfHoles),
-      tee_set_status: String(options.teeSetStatus || 'Active').trim() || 'Active'
-    }
-  );
+  const normalizedGender = _normalizePostingGender(options.gender);
+  const normalizedHoleCount = _normalizePostingHoleCount(options.numberOfHoles);
+  const normalizedTeeSetStatus = String(options.teeSetStatus || 'Active').trim() || 'Active';
 
-  return Array.isArray(data) ? data.map(_normalizeCourseTeePostingRow) : [];
+  if (normalizedHoleCount === 9) {
+    const [directRows, eighteenHoleRows] = await Promise.all([
+      _fetchCourseTeePostingEligibility(normalizedCourseId, 9, normalizedTeeSetStatus, normalizedGender),
+      _fetchCourseTeePostingEligibility(normalizedCourseId, 18, normalizedTeeSetStatus, normalizedGender)
+    ]);
+
+    const eighteenHoleSideRows = eighteenHoleRows.filter((row) => {
+      const ratingType = _normalizePostingRatingType(row?.RatingType);
+      return ratingType === 'Front' || ratingType === 'Back';
+    });
+
+    return _dedupeCourseTeePostingRows([
+      ...directRows,
+      ...eighteenHoleSideRows
+    ]).map(_normalizeCourseTeePostingRow);
+  }
+
+  return _fetchCourseTeePostingEligibility(
+    normalizedCourseId,
+    normalizedHoleCount,
+    normalizedTeeSetStatus,
+    normalizedGender
+  ).then((rows) => rows.map(_normalizeCourseTeePostingRow));
 }
 
 /**
