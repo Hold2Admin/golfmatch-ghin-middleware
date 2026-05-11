@@ -167,8 +167,10 @@ router.post(
 router.post(
   '/search',
   [
+    body('ghinNumber').optional().isString().trim().matches(/^\d{1,10}$/).withMessage('GHIN number must be 1-10 digits'),
     body('firstName').optional().isString().trim().isLength({ min: 1, max: 50 }),
     body('lastName').optional().isString().trim().isLength({ min: 1, max: 50 }),
+    body('email').optional().isEmail().withMessage('Valid email is required'),
     body('state').optional().isString().trim().isLength({ min: 2, max: 2 }),
     body('country').optional().isString().trim().isLength({ min: 3, max: 3 }),
     body('perPage').optional().isInt({ min: 1, max: 100 }),
@@ -187,10 +189,10 @@ router.post(
       });
     }
 
-    const { firstName, lastName, state, country, perPage, clubName, associationId } = req.body;
+    const { ghinNumber, firstName, lastName, email, state, country, perPage, clubName, associationId } = req.body;
 
     // Require at least one search parameter
-    if (!firstName && !lastName && !state && !country && !clubName && !associationId) {
+    if (!ghinNumber && !firstName && !lastName && !email && !state && !country && !clubName && !associationId) {
       return res.status(400).json({
         error: {
           code: 'INVALID_REQUEST',
@@ -200,11 +202,13 @@ router.post(
     }
 
     try {
-      logger.info('Searching for players', { firstName, lastName, state, country, perPage, clubName });
+      logger.info('Searching for players', { ghinNumber, firstName, lastName, email, state, country, perPage, clubName });
 
       const results = await ghinClient.searchPlayers({
+        ghinNumber,
         firstName,
         lastName,
+        email,
         state,
         country,
         perPage,

@@ -349,6 +349,7 @@ async function searchGolfers(params) {
   if (params.ghinNumber) query.golfer_id = params.ghinNumber;
   if (params.firstName)  query.first_name = params.firstName;
   if (params.lastName)   query.last_name  = params.lastName;
+  if (params.email)      query.email      = params.email;
   if (params.state)      query.state      = params.state;
   if (params.country)    query.country    = params.country;
 
