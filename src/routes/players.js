@@ -11,6 +11,12 @@ const { transformGhinPlayer } = require('../services/transformers/playerTransfor
 
 const logger = createLogger('players');
 
+const ghinNumberValidator = (field) => field
+  .isString()
+  .trim()
+  .matches(/^\d{1,10}$/)
+  .withMessage('GHIN number must be 1-10 digits');
+
 /**
  * GET /api/v1/players/:ghinNumber
  * Fetch a single player's handicap data
@@ -18,10 +24,7 @@ const logger = createLogger('players');
 router.get(
   '/:ghinNumber',
   [
-    param('ghinNumber')
-      .isNumeric()
-      .isLength({ min: 6, max: 10 })
-      .withMessage('GHIN number must be 6-10 digits')
+    ghinNumberValidator(param('ghinNumber'))
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -85,10 +88,8 @@ router.post(
     body('ghinNumbers')
       .isArray({ min: 1, max: 50 })
       .withMessage('Must provide 1-50 GHIN numbers'),
-    body('ghinNumbers.*')
-      .isNumeric()
-      .isLength({ min: 6, max: 10 })
-      .withMessage('Each GHIN number must be 6-10 digits')
+    ghinNumberValidator(body('ghinNumbers.*'))
+      .withMessage('Each GHIN number must be 1-10 digits')
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -103,12 +104,17 @@ router.post(
     }
 
     const { ghinNumbers, forceRefresh = false } = req.body;
+    const startedAt = Date.now();
 
     try {
-      logger.info(`Fetching ${ghinNumbers.length} players in batch`);
+      logger.info('Batch player lookup requested', {
+        correlationId: req.correlationId,
+        requested: ghinNumbers.length,
+        forceRefresh: forceRefresh === true,
+      });
 
       const results = await Promise.allSettled(
-        ghinNumbers.map(ghinNumber => ghinClient.getPlayer(ghinNumber))
+        ghinNumbers.map(ghinNumber => ghinClient.getPlayer(ghinNumber, { suppressSuccessLog: true }))
       );
 
       const players = [];
@@ -124,6 +130,16 @@ router.post(
         } else {
           errors.push({ ghinNumber, error: result.reason?.message });
         }
+      });
+
+      logger.info('Batch player lookup completed', {
+        correlationId: req.correlationId,
+        requested: ghinNumbers.length,
+        returned: players.length,
+        notFound: notFound.length,
+        errors: errors.length,
+        forceRefresh: forceRefresh === true,
+        duration: `${Date.now() - startedAt}ms`,
       });
 
       res.json({
@@ -153,6 +169,9 @@ router.post(
   [
     body('firstName').optional().isString().trim().isLength({ min: 1, max: 50 }),
     body('lastName').optional().isString().trim().isLength({ min: 1, max: 50 }),
+    body('state').optional().isString().trim().isLength({ min: 2, max: 2 }),
+    body('country').optional().isString().trim().isLength({ min: 3, max: 3 }),
+    body('perPage').optional().isInt({ min: 1, max: 100 }),
     body('clubName').optional().isString().trim().isLength({ min: 1, max: 100 }),
     body('associationId').optional().matches(/^[A-Z]{2,4}$/)
   ],
@@ -168,10 +187,10 @@ router.post(
       });
     }
 
-    const { firstName, lastName, clubName, associationId } = req.body;
+    const { firstName, lastName, state, country, perPage, clubName, associationId } = req.body;
 
     // Require at least one search parameter
-    if (!firstName && !lastName && !clubName && !associationId) {
+    if (!firstName && !lastName && !state && !country && !clubName && !associationId) {
       return res.status(400).json({
         error: {
           code: 'INVALID_REQUEST',
@@ -181,12 +200,14 @@ router.post(
     }
 
     try {
-      logger.info('Searching for players', { firstName, lastName, clubName });
+      logger.info('Searching for players', { firstName, lastName, state, country, perPage, clubName });
 
-      // TODO: Implement GHIN search (currently returns mock data)
       const results = await ghinClient.searchPlayers({
         firstName,
         lastName,
+        state,
+        country,
+        perPage,
         clubName,
         associationId
       });
@@ -215,10 +236,7 @@ router.post(
 router.post(
   '/:ghinNumber/request-access',
   [
-    param('ghinNumber')
-      .isNumeric()
-      .isLength({ min: 6, max: 10 })
-      .withMessage('GHIN number must be 6-10 digits'),
+    ghinNumberValidator(param('ghinNumber')),
     body('email')
       .isEmail()
       .withMessage('Valid email is required')
@@ -277,10 +295,7 @@ router.post(
 router.get(
   '/:ghinNumber/access-status',
   [
-    param('ghinNumber')
-      .isNumeric()
-      .isLength({ min: 6, max: 10 })
-      .withMessage('GHIN number must be 6-10 digits')
+    ghinNumberValidator(param('ghinNumber'))
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -317,10 +332,7 @@ router.get(
 router.post(
   '/:ghinNumber/approve-access',
   [
-    param('ghinNumber')
-      .isNumeric()
-      .isLength({ min: 6, max: 10 })
-      .withMessage('GHIN number must be 6-10 digits')
+    ghinNumberValidator(param('ghinNumber'))
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -363,10 +375,7 @@ router.post(
 router.delete(
   '/:ghinNumber/revoke-access',
   [
-    param('ghinNumber')
-      .isNumeric()
-      .isLength({ min: 6, max: 10 })
-      .withMessage('GHIN number must be 6-10 digits')
+    ghinNumberValidator(param('ghinNumber'))
   ],
   async (req, res) => {
     const errors = validationResult(req);

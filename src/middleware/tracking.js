@@ -17,6 +17,13 @@ function isPlatformProbe(req) {
   return userAgent.includes('healthcheck/1.0') || userAgent.includes('alwayson');
 }
 
+function isInternalBatchRefresh(req) {
+  const userAgent = (getUserAgent(req) || '').toLowerCase();
+  return req.method === 'POST'
+    && (String(req.path || '').endsWith('/batch') || String(req.originalUrl || '').includes('/players/batch'))
+    && userAgent === 'node';
+}
+
 function getRequestLogLevel(req, statusCode) {
   if (statusCode >= 500) {
     return 'error';
@@ -27,6 +34,10 @@ function getRequestLogLevel(req, statusCode) {
   }
 
   if (isPlatformProbe(req)) {
+    return 'debug';
+  }
+
+  if (isInternalBatchRefresh(req)) {
     return 'debug';
   }
 

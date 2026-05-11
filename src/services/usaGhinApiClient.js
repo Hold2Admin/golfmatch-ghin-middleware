@@ -198,7 +198,7 @@ async function _refreshToken() {
 
   // Cache for 11.5 hours (token lasts ~12 hours per docs)
   _tokenCache = { token, userId: userId != null ? String(userId) : null, expiresAt: Date.now() + 11.5 * 60 * 60 * 1000 };
-  logger.info('USGA bearer token refreshed');
+  logger.debug('USGA bearer token refreshed');
   return token;
   })();
 
@@ -341,7 +341,7 @@ async function getGolfer(ghinNumber) {
 }
 
 /**
- * Search golfers by GHIN number, first name, or last name.
+ * Search golfers by GHIN number or supported name/location filters.
  * Returns array of normalized players.
  */
 async function searchGolfers(params) {
@@ -349,6 +349,8 @@ async function searchGolfers(params) {
   if (params.ghinNumber) query.golfer_id = params.ghinNumber;
   if (params.firstName)  query.first_name = params.firstName;
   if (params.lastName)   query.last_name  = params.lastName;
+  if (params.state)      query.state      = params.state;
+  if (params.country)    query.country    = params.country;
 
   const data = await request('GET', '/golfers/search.json', query);
   return (data.golfers ?? []).map(_normalizeGolfer);

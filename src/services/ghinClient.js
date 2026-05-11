@@ -18,13 +18,19 @@ const USE_DATABASE = process.env.GHIN_USE_DATABASE !== 'false';
  * @param {string} ghinNumber 
  * @returns {Promise<Object|null>}
  */
-async function getPlayer(ghinNumber) {
+async function getPlayer(ghinNumber, options = {}) {
+  const suppressSuccessLog = options?.suppressSuccessLog === true;
+
   if (config.ghin.useMock) {
-    logger.info(`[MOCK] Fetching player ${ghinNumber}`);
+    if (!suppressSuccessLog) {
+      logger.info(`[MOCK] Fetching player ${ghinNumber}`);
+    }
     return mockData.getPlayer(ghinNumber);
   }
 
-  logger.info(`[LIVE] Fetching player ${ghinNumber} from USGA API`);
+  if (!suppressSuccessLog) {
+    logger.info(`[LIVE] Fetching player ${ghinNumber} from USGA API`);
+  }
   return usaGhinApiClient.getGolfer(ghinNumber);
 }
 
