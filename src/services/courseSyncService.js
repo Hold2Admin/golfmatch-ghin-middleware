@@ -1584,6 +1584,7 @@ async function getReconciliationCandidateCourseIds(options = {}) {
   const rows = await database.query(
     `SELECT CourseId AS courseId
      FROM dbo.GHIN_Courses
+     WHERE UPPER(LTRIM(RTRIM(CacheSource))) <> 'MANUAL'
      ORDER BY TRY_CONVERT(BIGINT, CourseId), CourseId
      OFFSET @offset ROWS FETCH NEXT @batchSize ROWS ONLY`,
     {

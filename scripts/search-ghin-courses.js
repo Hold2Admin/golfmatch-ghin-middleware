@@ -59,6 +59,7 @@ function parseArgs(argv) {
   const positionals = [];
   let name = null;
   let state = null;
+  let facilityId = null;
   let perPage = 50;
   let countOnly = false;
 
@@ -73,6 +74,10 @@ function parseArgs(argv) {
     }
     if (arg.startsWith('--state=')) {
       state = arg.slice('--state='.length).trim() || null;
+      continue;
+    }
+    if (arg.startsWith('--facility-id=')) {
+      facilityId = arg.slice('--facility-id='.length).trim() || null;
       continue;
     }
     if (arg.startsWith('--per-page=')) {
@@ -93,15 +98,16 @@ function parseArgs(argv) {
     state = positionals[1];
   }
 
-  return { name, state, perPage, countOnly };
+  return { name, state, facilityId, perPage, countOnly };
 }
 
 async function run() {
-  const { name, state, perPage, countOnly } = parseArgs(process.argv.slice(2));
+  const { name, state, facilityId, perPage, countOnly } = parseArgs(process.argv.slice(2));
 
-  if (!name && !state && !countOnly) {
+  if (!name && !state && !facilityId && !countOnly) {
     console.error('Usage: node scripts/search-ghin-courses.js <name> [state]');
     console.error('   or: node scripts/search-ghin-courses.js --state=US-NY');
+    console.error('   or: node scripts/search-ghin-courses.js --facility-id=57279');
     console.error('   or: node scripts/search-ghin-courses.js --state=US-NY --count-only');
     console.error('   or: node scripts/search-ghin-courses.js --count-only');
     console.error('   or: node scripts/search-ghin-courses.js --name="oak" --state=IL');
@@ -134,9 +140,9 @@ async function run() {
     });
     results = Array.from(uniqueByCourseId.values());
   } else {
-    const searchLabel = [name ? `"${name}"` : null, state ? `in ${state}` : null].filter(Boolean).join(' ');
+    const searchLabel = [name ? `"${name}"` : null, state ? `in ${state}` : null, facilityId ? `for facility ${facilityId}` : null].filter(Boolean).join(' ');
     console.log(`Searching USGA API for ${searchLabel}...`);
-    results = await usaGhinApiClient.searchCourses({ courseName: name, state, perPage });
+    results = await usaGhinApiClient.searchCourses({ courseName: name, state, facilityId, perPage });
   }
 
   if (!results.length) {
