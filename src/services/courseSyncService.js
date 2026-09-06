@@ -1650,6 +1650,17 @@ async function getReconciliationCandidateCourseIds(options = {}) {
 }
 
 async function reconcileAllCandidates(options = {}) {
+  if (courseCachePolicy.isDayTtlMode()) {
+    const allow = String(process.env.GHIN_ALLOW_FULL_RECON || '').trim().toLowerCase();
+    if (!(allow === '1' || allow === 'true' || allow === 'yes')) {
+      const error = new Error('Full-catalog reconciliation is disabled while GHIN_COURSE_CACHE_MODE=day-ttl. Set GHIN_ALLOW_FULL_RECON=1 only for Hold2-approved recovery.');
+      error.code = 'FULL_RECON_DISABLED_IN_DAY_TTL';
+      throw error;
+    }
+    logger.warn('Full-catalog reconciliation running under day-ttl with GHIN_ALLOW_FULL_RECON override', {
+      runContext: options.runContext || null
+    });
+  }
   const batchSize = Number.isFinite(options.batchSize)
     ? Math.max(1, Math.floor(options.batchSize))
     : 100;
