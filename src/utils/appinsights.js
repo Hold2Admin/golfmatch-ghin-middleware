@@ -21,13 +21,25 @@ function getAppInsightsModule() {
  * Initialize Application Insights
  * Prefer APPLICATIONINSIGHTS_CONNECTION_STRING; fall back to APPINSIGHTS_INSTRUMENTATIONKEY
  */
+let alreadyInitialized = false;
+
 function initializeAppInsights() {
+  if (alreadyInitialized && appInsightsModule?.defaultClient) {
+    return appInsightsModule.defaultClient;
+  }
+
   const connectionString =
     process.env.APPLICATIONINSIGHTS_CONNECTION_STRING || process.env.AppInsights__ConnectionString;
   const instrumentationKey = process.env.APPINSIGHTS_INSTRUMENTATIONKEY;
 
   if (!connectionString && !instrumentationKey) {
     logger.warn('Application Insights not configured (missing connection string / instrumentation key)');
+    return null;
+  }
+
+  // Key Vault reference must be resolved by App Service before setup; refuse the unresolved marker.
+  if (typeof connectionString === 'string' && connectionString.startsWith('@Microsoft.KeyVault')) {
+    logger.error('Application Insights connection string is an unresolved Key Vault reference');
     return null;
   }
 
@@ -49,14 +61,16 @@ function initializeAppInsights() {
 
     const client = appInsights.defaultClient;
 
-    // Set cloud role name for Azure
-    client.config.aadEnabled = true; // Enable AAD authentication (managed identity)
+    // Connection-string / ikey ingestion. Do not enable AAD without setAzureTokenCredential.
     client.context.tags[client.context.keys.cloudRole] = 'ghin-middleware-api';
     client.context.tags[client.context.keys.cloudRoleInstance] = process.env.WEBSITE_INSTANCE_ID || 'local';
 
-    logger.debug('Application Insights initialized', {
+    alreadyInitialized = true;
+
+    logger.info('Application Insights initialized', {
       connectionString: connectionString ? connectionString.substring(0, 16) + '...' : undefined,
-      instrumentationKey: instrumentationKey ? instrumentationKey.substring(0, 8) + '...' : undefined
+      instrumentationKey: instrumentationKey ? instrumentationKey.substring(0, 8) + '...' : undefined,
+      cloudRole: 'ghin-middleware-api'
     });
 
     return client;

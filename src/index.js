@@ -158,11 +158,14 @@ function safeRequire(moduleName) {
   }
 }
 
+// App Insights MUST start before Express/http is loaded or auto request collection never hooks.
+const { initializeAppInsights, trackEvent } = safeRequire('./utils/appinsights');
+initializeAppInsights();
+
 const express = safeRequire('express');
 const cors = safeRequire('cors');
 const helmet = safeRequire('helmet');
 const { createLogger } = safeRequire('./utils/logger');
-const { initializeAppInsights, trackEvent } = safeRequire('./utils/appinsights');
 const config = safeRequire('./config');
 const { conditionalAuth } = safeRequire('./middleware/auth');
 const { validateRequest, sanitizeHeaders } = safeRequire('./middleware/validation');
@@ -189,6 +192,9 @@ async function initializeSecrets() {
     if (process.env.GHIN_ENVIRONMENT === 'sandbox') {
       process.env.GHIN_API_BASE_URL = 'https://app-sandbox.hcp2020.com/api/v1';
     }
+
+    // Re-init if connection string only arrived via Key Vault secrets (local / missing App Setting).
+    initializeAppInsights();
 
     return { loaded: true, source: 'key-vault-or-local' };
   } catch (error) {
@@ -436,8 +442,6 @@ async function bootstrap() {
 
     setImmediate(() => {
       try {
-        initializeAppInsights();
-
         trackEvent('ApplicationStartup', {
           port: PORT.toString(),
           environment: config.env,
@@ -448,7 +452,7 @@ async function bootstrap() {
           commitSha: runtimeInfo.commitSha || ''
         });
       } catch (error) {
-        logger.warn('Application Insights background init failed', { error: error.message });
+        logger.warn('Application Insights startup event failed', { error: error.message });
       }
     });
   });
