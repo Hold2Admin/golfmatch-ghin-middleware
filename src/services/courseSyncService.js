@@ -1811,9 +1811,92 @@ async function getOrFetchCourse(courseId, options = {}) {
   return promise;
 }
 
+
+async function purgeExpiredCacheCourses(options = {}) {
+  if (!courseCachePolicy.isDayTtlMode()) {
+    return {
+      skipped: true,
+      reason: 'not_day_ttl',
+      cacheMode: courseCachePolicy.getCourseCacheMode()
+    };
+  }
+
+  await ensureCacheTables();
+  const sql = database.sql;
+  const now = options.now instanceof Date ? options.now : new Date();
+  const limit = Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit)) : 500;
+
+  const expired = await database.query(
+    `SELECT TOP (@limit) CourseId AS courseId
+     FROM dbo.GHIN_Courses
+     WHERE ExpiresAt <= @now
+     ORDER BY ExpiresAt ASC`,
+    {
+      limit: { type: sql.Int, value: limit },
+      now: { type: sql.DateTime2, value: now }
+    }
+  );
+
+  const courseIds = (expired || []).map((row) => String(row.courseId)).filter(Boolean);
+  if (courseIds.length === 0) {
+    return {
+      skipped: false,
+      deletedCourses: 0,
+      deletedTees: 0,
+      deletedHoles: 0,
+      courseIds: []
+    };
+  }
+
+  let deletedHoles = 0;
+  let deletedTees = 0;
+  let deletedCourses = 0;
+
+  for (const courseId of courseIds) {
+    const holeRows = await database.query(
+      `DELETE h
+       FROM dbo.GHIN_Holes h
+       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
+       WHERE t.CourseId = @courseId;
+       SELECT @@ROWCOUNT AS deletedCount;`,
+      { courseId: { type: sql.VarChar(50), value: courseId } }
+    );
+    const teeRows = await database.query(
+      `DELETE FROM dbo.GHIN_Tees WHERE CourseId = @courseId;
+       SELECT @@ROWCOUNT AS deletedCount;`,
+      { courseId: { type: sql.VarChar(50), value: courseId } }
+    );
+    const courseRows = await database.query(
+      `DELETE FROM dbo.GHIN_Courses WHERE CourseId = @courseId;
+       SELECT @@ROWCOUNT AS deletedCount;`,
+      { courseId: { type: sql.VarChar(50), value: courseId } }
+    );
+
+    deletedHoles += Number(holeRows?.[holeRows.length - 1]?.deletedCount || holeRows?.[0]?.deletedCount || 0);
+    deletedTees += Number(teeRows?.[teeRows.length - 1]?.deletedCount || teeRows?.[0]?.deletedCount || 0);
+    deletedCourses += Number(courseRows?.[courseRows.length - 1]?.deletedCount || courseRows?.[0]?.deletedCount || 0);
+  }
+
+  logger.info('Purged expired CacheDB course working-set rows', {
+    deletedCourses,
+    deletedTees,
+    deletedHoles,
+    sampleCourseIds: courseIds.slice(0, 10)
+  });
+
+  return {
+    skipped: false,
+    deletedCourses,
+    deletedTees,
+    deletedHoles,
+    courseIds
+  };
+}
+
 module.exports = {
   getCachedCourseFreshness,
   getOrFetchCourse,
+  purgeExpiredCacheCourses,
   markCourseCacheInvalidated,
   buildCacheUpsertPayload,
   buildMirrorPayload,

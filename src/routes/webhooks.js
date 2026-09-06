@@ -3,7 +3,7 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const usaGhinApiClient = require('../services/usaGhinApiClient');
-const { processCourseSync, reconcileCourses, reconcileAllCandidates, getOrFetchCourse, markCourseCacheInvalidated } = require('../services/courseSyncService');
+const { processCourseSync, reconcileCourses, reconcileAllCandidates, getOrFetchCourse, markCourseCacheInvalidated, purgeExpiredCacheCourses } = require('../services/courseSyncService');
 const { ensureCourseWebhook, getCourseWebhookStatus, ensureGpaWebhook, getGpaWebhookStatus } = require('../services/ghinWebhookService');
 const { loadSecrets } = require('../config/secrets');
 const { getMetricsSnapshot } = require('../services/syncMetricsService');
@@ -592,5 +592,20 @@ router.post(
     }
   }
 );
+
+
+router.post('/ghin/course/purge-expired', async (req, res) => {
+  try {
+    await ensureRuntimeSecretsLoaded();
+    const limit = Number(req.body?.limit || req.query?.limit || 500);
+    const result = await purgeExpiredCacheCourses({ limit });
+    return res.json({ status: 'ok', ...result });
+  } catch (error) {
+    logger.error('purge-expired failed', { error: error.message });
+    return res.status(error.status || 500).json({
+      error: { code: error.code || 'PURGE_EXPIRED_FAILED', message: error.message }
+    });
+  }
+});
 
 module.exports = router;
