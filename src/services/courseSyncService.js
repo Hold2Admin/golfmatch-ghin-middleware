@@ -193,6 +193,36 @@ function buildMirrorPayload(course) {
   };
 }
 
+function teeSortKey(tee) {
+  const id = String(tee?.ghinTeeId || '').trim();
+  if (id) {
+    return `id:${id}`;
+  }
+  return `name:${String(tee?.teeName || '')}|${String(tee?.gender || '')}|${String(tee?.teeSetSide || '')}`;
+}
+
+// Align with golfmatch-api normalizeCoursePayload: tee order / hole order must not affect hash.
+function orderStabilizeForHash(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  const next = { ...payload };
+  if (!Array.isArray(next.tees)) {
+    return next;
+  }
+
+  next.tees = next.tees.map((tee) => {
+    const t = { ...tee };
+    if (Array.isArray(t.holes)) {
+      t.holes = [...t.holes].sort((a, b) => Number(a.holeNumber) - Number(b.holeNumber));
+    }
+    return t;
+  }).sort((a, b) => teeSortKey(a).localeCompare(teeSortKey(b)));
+
+  return next;
+}
+
 function stableNormalize(value) {
   if (Array.isArray(value)) {
     return value.map(stableNormalize);
@@ -212,7 +242,7 @@ function stableNormalize(value) {
 }
 
 function hashPayload(payload) {
-  const normalized = stableNormalize(payload);
+  const normalized = stableNormalize(orderStabilizeForHash(payload));
   const serialized = JSON.stringify(normalized);
   return crypto.createHash('sha256').update(serialized).digest('hex');
 }
