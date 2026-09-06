@@ -10,14 +10,16 @@ const {
   recordReconciliationRun
 } = require('./syncMetricsService');
 const { persistReconciliationRun } = require('./reconciliationHistoryService');
+const courseCachePolicy = require('./courseCachePolicy');
 
 const logger = createLogger('courseSyncService');
-const CACHE_TTL_DAYS = 365;
+const CACHE_TTL_DAYS = courseCachePolicy.LEGACY_TTL_DAYS;
 let cacheTablesEnsured = false;
 let cacheWritesInFlight = 0;
 const cacheWriteWaiters = [];
 let mirrorCallbacksInFlight = 0;
 const mirrorCallbackWaiters = [];
+const courseFetchInFlight = new Map();
 
 function getCacheWriteConcurrency() {
   const configured = Number(
@@ -224,10 +226,10 @@ function buildTeeStructurePayload(payload) {
 
 function buildCacheUpsertPayload(courses, options = {}) {
   const now = options.now instanceof Date ? options.now : new Date();
-  const expiry = options.expiry instanceof Date
-    ? options.expiry
-    : new Date(now.getTime() + CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
-  const cacheSource = String(options.cacheSource || 'USGA_WEBHOOK');
+  const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
+
+
+  const cacheSource = courseCachePolicy.resolveCacheSource(options.cacheSource, options);
 
   const courseRows = [];
   const teeRows = [];
@@ -1094,7 +1096,7 @@ async function buildMirrorPayloadFromCache(courseId) {
   };
 }
 
-async function upsertCourseToCache(course, hashes = {}) {
+async function upsertCourseToCache(course, hashes = {}, options = {}) {
   const pool = await database.connect();
   if (!pool) {
     throw new Error('Cache DB is not configured. Cannot process course webhook.');
@@ -1107,11 +1109,11 @@ async function upsertCourseToCache(course, hashes = {}) {
   await tx.begin();
 
   const now = new Date();
-  const expiry = new Date(now.getTime() + CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
   const payload = buildSingleCourseCacheUpsertPayload(course, hashes, {
     now,
     expiry,
-    cacheSource: 'USGA_WEBHOOK'
+    cacheSource: courseCachePolicy.resolveCacheSource(options.cacheSource, options)
   });
 
   try {
@@ -1204,12 +1206,12 @@ async function bulkUpsertCoursesToCache(courses, options = {}) {
   });
 }
 
-async function upsertCourseHeaderToCache(course, hashes = {}) {
+async function upsertCourseHeaderToCache(course, hashes = {}, options = {}) {
   await ensureCacheTables();
 
   const sql = database.sql;
   const now = new Date();
-  const expiry = new Date(now.getTime() + CACHE_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
 
   await database.query(
     `UPDATE dbo.GHIN_Courses
@@ -1238,7 +1240,7 @@ async function upsertCourseHeaderToCache(course, hashes = {}) {
       country: { type: sql.VarChar(10), value: course.country || 'USA' },
       cachedAt: { type: sql.DateTime2, value: now },
       expiresAt: { type: sql.DateTime2, value: expiry },
-      cacheSource: { type: sql.NVarChar(50), value: 'USGA_WEBHOOK' },
+      cacheSource: { type: sql.NVarChar(50), value: courseCachePolicy.resolveCacheSource(options.cacheSource, options) },
       lastPayloadHash: { type: sql.VarChar(64), value: hashes.payloadHash || null },
       lastTeeStructureHash: { type: sql.VarChar(64), value: hashes.teeStructureHash || null }
     }
@@ -1357,8 +1359,12 @@ async function processCourseSync(course, options = {}) {
       }
 
       if (cachedHash === incomingHash) {
-        if (hashesMissingFromCache) {
-          await upsertCourseHeaderToCache(course, incomingHashes);
+        if (hashesMissingFromCache || courseCachePolicy.isDayTtlMode() || options.fromWebhook || options.fromRecon || options.cacheSource) {
+          await upsertCourseHeaderToCache(course, incomingHashes, {
+            cacheSource: options.cacheSource,
+            fromWebhook: Boolean(options.fromWebhook),
+            fromRecon: Boolean(options.fromRecon)
+          });
         }
 
         recordProcessedNochange();
@@ -1383,8 +1389,12 @@ async function processCourseSync(course, options = {}) {
 
       if (!cachedPayload) {
         if (cachedHashes?.payloadHash && cachedHashes.payloadHash === incomingHash) {
-          if (hashesMissingFromCache) {
-            await upsertCourseHeaderToCache(course, incomingHashes);
+          if (hashesMissingFromCache || courseCachePolicy.isDayTtlMode() || options.fromWebhook || options.fromRecon || options.cacheSource) {
+            await upsertCourseHeaderToCache(course, incomingHashes, {
+              cacheSource: options.cacheSource,
+              fromWebhook: Boolean(options.fromWebhook),
+              fromRecon: Boolean(options.fromRecon)
+            });
           }
 
           recordProcessedNochange();
@@ -1412,11 +1422,16 @@ async function processCourseSync(course, options = {}) {
     }
 
     const upsertStartedAtMs = Date.now();
+    const writeOptions = {
+      cacheSource: options.cacheSource,
+      fromWebhook: Boolean(options.fromWebhook),
+      fromRecon: Boolean(options.fromRecon)
+    };
     await runWithCacheWriteRetry(course.courseId, async () => {
       if (useHeaderOnlyUpsert) {
-        await upsertCourseHeaderToCache(course, incomingHashes);
+        await upsertCourseHeaderToCache(course, incomingHashes, writeOptions);
       } else {
-        await upsertCourseToCache(course, incomingHashes);
+        await upsertCourseToCache(course, incomingHashes, writeOptions);
       }
     });
     timings.upsertDurationMs = Date.now() - upsertStartedAtMs;
@@ -1670,7 +1685,95 @@ async function reconcileAllCandidates(options = {}) {
   return finalSummary;
 }
 
+async function getCachedCourseFreshness(courseId) {
+  const sql = database.sql;
+  const rows = await database.query(
+    `SELECT CourseId AS courseId, ExpiresAt AS expiresAt, CachedAt AS cachedAt, CacheSource AS cacheSource
+     FROM dbo.GHIN_Courses
+     WHERE CourseId = @courseId`,
+    { courseId: { type: sql.VarChar(50), value: String(courseId) } }
+  );
+  if (!rows.length) {
+    return { exists: false, fresh: false, row: null };
+  }
+  const row = rows[0];
+  return { exists: true, fresh: courseCachePolicy.isCacheFresh(row), row };
+}
+
+async function markCourseCacheInvalidated(courseId) {
+  await ensureCacheTables();
+  const sql = database.sql;
+  const now = new Date();
+  await database.query(
+    `UPDATE dbo.GHIN_Courses
+     SET ExpiresAt = @expiresAt,
+         UpdatedAt = GETUTCDATE()
+     WHERE CourseId = @courseId`,
+    {
+      courseId: { type: sql.VarChar(50), value: String(courseId) },
+      expiresAt: { type: sql.DateTime2, value: now }
+    }
+  );
+  return { courseId: String(courseId), invalidatedAt: now.toISOString() };
+}
+
+/**
+ * Coalesced on-demand fetch: fresh cache hit, else one USGA getCourse shared by concurrent callers.
+ * When GHIN_COURSE_CACHE_MODE=legacy, still returns cache if present (even if ExpiresAt far future).
+ */
+async function getOrFetchCourse(courseId, options = {}) {
+  const id = String(courseId || '').trim();
+  if (!id) {
+    throw new Error('courseId is required');
+  }
+
+  await ensureCacheTables();
+
+  if (!options.forceRefresh) {
+    const freshness = await getCachedCourseFreshness(id);
+    if (freshness.exists && freshness.fresh) {
+      const cached = await buildMirrorPayloadFromCache(id);
+      if (cached) {
+        return { course: cached, source: 'cache', cacheMode: courseCachePolicy.getCourseCacheMode() };
+      }
+    }
+  } else if (courseCachePolicy.isDayTtlMode()) {
+    await markCourseCacheInvalidated(id);
+  }
+
+  if (courseFetchInFlight.has(id)) {
+    return courseFetchInFlight.get(id);
+  }
+
+  const promise = (async () => {
+    const course = await usaGhinApiClient.getCourse(id);
+    if (!course) {
+      return { course: null, source: 'usga', notFound: true, cacheMode: courseCachePolicy.getCourseCacheMode() };
+    }
+
+    const syncOptions = {
+      detectNoop: options.detectNoop !== false,
+      syncMirror: options.syncMirror !== false,
+      cacheSource: options.cacheSource,
+      fromWebhook: Boolean(options.fromWebhook),
+      fromRecon: Boolean(options.fromRecon)
+    };
+
+    // processCourseSync will upsert with policy TTL/source when options are threaded through.
+    await processCourseSync(course, syncOptions);
+    return { course, source: options.fromWebhook ? 'webhook_refetch' : 'usga_fetch', cacheMode: courseCachePolicy.getCourseCacheMode() };
+  })().finally(() => {
+    courseFetchInFlight.delete(id);
+  });
+
+  courseFetchInFlight.set(id, promise);
+  return promise;
+}
+
 module.exports = {
+  getCachedCourseFreshness,
+  getOrFetchCourse,
+  markCourseCacheInvalidated,
   buildCacheUpsertPayload,
   buildMirrorPayload,
   buildMirrorPayloadFromCache,

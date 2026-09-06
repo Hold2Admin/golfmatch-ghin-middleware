@@ -8,6 +8,8 @@ const { param, body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinCourse, transformGhinTee, transformGhinHole } = require('../services/transformers/courseTransformer');
+const { getOrFetchCourse, getCachedCourseFreshness } = require('../services/courseSyncService');
+const courseCachePolicy = require('../services/courseCachePolicy');
 
 const logger = createLogger('courses');
 
@@ -116,6 +118,54 @@ function resolvePostingTeeMatch(rows, requestedTeeSetId) {
  * GET /api/v1/courses/:ghinCourseId
  * Fetch complete course data including all tees and holes
  */
+
+/**
+ * GET /api/v1/courses/:ghinCourseId/working-set
+ * On-demand hydrate for USGA course TTL working-set architecture.
+ * Behind GHIN_COURSE_CACHE_MODE=day-ttl this treats expired ExpiresAt as a miss.
+ */
+router.get(
+  '/:ghinCourseId/working-set',
+  [param('ghinCourseId').isString().trim().notEmpty()],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: { code: 'INVALID_REQUEST', details: errors.array() } });
+    }
+
+    try {
+      const courseId = String(req.params.ghinCourseId).trim();
+      const forceRefresh = String(req.query.refresh || '').toLowerCase() === '1'
+        || String(req.query.refresh || '').toLowerCase() === 'true';
+      const result = await getOrFetchCourse(courseId, {
+        forceRefresh,
+        syncMirror: String(req.query.mirror || '1') !== '0',
+        cacheSource: 'usga_fetch'
+      });
+
+      if (result.notFound || !result.course) {
+        return res.status(404).json({
+          error: { code: 'COURSE_NOT_FOUND', message: `Course ${courseId} not found upstream.` }
+        });
+      }
+
+      const freshness = await getCachedCourseFreshness(courseId);
+      return res.json({
+        courseId,
+        source: result.source,
+        cacheMode: result.cacheMode || courseCachePolicy.getCourseCacheMode(),
+        fresh: freshness.fresh,
+        expiresAt: freshness.row?.expiresAt || null,
+        course: result.course
+      });
+    } catch (error) {
+      logger.error('working-set hydrate failed', { error: error.message, courseId: req.params.ghinCourseId });
+      return res.status(error.status || 500).json({
+        error: { code: error.code || 'WORKING_SET_HYDRATE_FAILED', message: error.message }
+      });
+    }
+  }
+);
 router.get(
   '/:ghinCourseId/posting-season',
   [

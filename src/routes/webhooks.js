@@ -3,7 +3,7 @@ const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const usaGhinApiClient = require('../services/usaGhinApiClient');
-const { processCourseSync, reconcileCourses, reconcileAllCandidates } = require('../services/courseSyncService');
+const { processCourseSync, reconcileCourses, reconcileAllCandidates, getOrFetchCourse, markCourseCacheInvalidated } = require('../services/courseSyncService');
 const { ensureCourseWebhook, getCourseWebhookStatus, ensureGpaWebhook, getGpaWebhookStatus } = require('../services/ghinWebhookService');
 const { loadSecrets } = require('../config/secrets');
 const { getMetricsSnapshot } = require('../services/syncMetricsService');
@@ -183,18 +183,33 @@ router.post(
         return res.status(202).json({ status: 'ignored', reason: 'missing_course_id' });
       }
 
-      const course = await usaGhinApiClient.getCourse(courseId);
-      if (!course) {
+      // Invalidate first so a failed refetch cannot leave a falsely-fresh ExpiresAt.
+      try {
+        await markCourseCacheInvalidated(courseId);
+      } catch (invalidateError) {
+        logger.warn('Course webhook invalidate skipped (course may be uncached)', {
+          courseId,
+          error: invalidateError.message
+        });
+      }
+
+      const fetchResult = await getOrFetchCourse(courseId, {
+        forceRefresh: true,
+        fromWebhook: true,
+        cacheSource: 'webhook_refetch'
+      });
+
+      if (fetchResult.notFound || !fetchResult.course) {
         logger.warn('GHIN webhook referenced unknown course id', { courseId });
         return res.status(202).json({ status: 'ignored', reason: 'course_not_found', courseId });
       }
 
-      const mirrorResult = await processCourseSync(course);
-
       return res.status(202).json({
         status: 'accepted',
         courseId,
-        mirrorStatus: mirrorResult?.status || 'ok'
+        mirrorStatus: 'ok',
+        source: fetchResult.source,
+        cacheMode: fetchResult.cacheMode
       });
     } catch (error) {
       const status = error.status || 500;

@@ -117,7 +117,15 @@ function startReconciliationScheduler() {
     .trim()
     .toLowerCase();
 
-  if (scheduleMode !== FIXED_SCHEDULE_MODE) {
+  if (scheduleMode === 'disabled' || scheduleMode === 'off' || scheduleMode === 'none') {
+    logger.warn('Reconciliation scheduler explicitly disabled (GHIN_RECONCILIATION_SCHEDULE_MODE)', {
+      mode: scheduleMode,
+      note: 'legacy full-catalog recon is not the freshness authority after USGA course TTL cutover'
+    });
+    return { enabled: false, reason: 'disabled', mode: scheduleMode };
+  }
+
+  if (scheduleMode !== FIXED_SCHEDULE_MODE && scheduleMode !== 'legacy-first-sunday') {
     logger.error('Reconciliation scheduler disabled due to invalid schedule mode', {
       expected: FIXED_SCHEDULE_MODE,
       provided: scheduleMode
