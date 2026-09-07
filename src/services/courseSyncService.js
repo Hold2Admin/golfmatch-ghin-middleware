@@ -2105,10 +2105,23 @@ async function purgeExpiredCacheCourses(options = {}) {
   const mirror = options.mirror !== false;
 
   const expired = await database.query(
-    `SELECT TOP (@limit) CourseId AS courseId
-     FROM dbo.GHIN_Courses
-     WHERE ExpiresAt <= @now
-     ORDER BY ExpiresAt ASC`,
+    `SELECT TOP (@limit) c.CourseId AS courseId
+     FROM dbo.GHIN_Courses c
+     WHERE c.ExpiresAt <= @now
+       AND EXISTS (
+         SELECT 1
+         FROM dbo.GHIN_Tees t
+         WHERE t.CourseId = c.CourseId
+           AND (
+             t.CourseRating18 IS NOT NULL
+             OR t.SlopeRating18 IS NOT NULL
+             OR t.CourseRatingF9 IS NOT NULL
+             OR t.SlopeRatingF9 IS NOT NULL
+             OR t.CourseRatingB9 IS NOT NULL
+             OR t.SlopeRatingB9 IS NOT NULL
+           )
+       )
+     ORDER BY c.ExpiresAt ASC`,
     {
       limit: { type: sql.Int, value: limit },
       now: { type: sql.DateTime2, value: now }
@@ -2135,6 +2148,10 @@ async function purgeExpiredCacheCourses(options = {}) {
 
   for (const courseId of courseIds) {
     const cacheResult = await nullCacheDbTeeRatings(courseId);
+    // Skip already-null courses (selection should have excluded them; belt-and-suspenders).
+    if (!cacheResult.nulledTees) {
+      continue;
+    }
     nulledCourses += 1;
     nulledTees += cacheResult.nulledTees;
 

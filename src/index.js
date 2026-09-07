@@ -175,6 +175,7 @@ const database = safeRequire('./services/database');
 const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
+const { startRatingsExpiryScheduler } = safeRequire('./services/ratingsExpiryScheduler');
 const { getRuntimeInfo } = safeRequire('./utils/runtimeInfo');
 
 async function initializeSecrets() {
@@ -410,6 +411,7 @@ async function bootstrap() {
     const ghinMode = config.ghin.useMock ? 'MOCK' : 'LIVE';
     const dbConfigured = Boolean(process.env.GHIN_CACHE_DB_SERVER && process.env.GHIN_CACHE_DB_NAME);
     const reconciliationScheduler = startReconciliationScheduler();
+    const ratingsExpiryScheduler = startRatingsExpiryScheduler();
     const runtimeInfo = getRuntimeInfo();
     const startupDurationMs = getStartupElapsedMs();
     const bindDurationMs = Date.now() - listenBindStartedMs;
@@ -435,6 +437,8 @@ async function bootstrap() {
       secretsSource: secretStatus.source,
       reconciliationSchedulerEnabled: Boolean(reconciliationScheduler?.enabled),
       nextReconciliationRunAtUtc: reconciliationScheduler?.nextRunAtUtc || null,
+      ratingsExpirySchedulerEnabled: Boolean(ratingsExpiryScheduler?.enabled),
+      nextRatingsExpiryRunAtUtc: ratingsExpiryScheduler?.nextRunAtUtc || null,
       deployment: runtimeInfo
     });
     logger.info(`✅ GHIN Middleware API listening on port ${PORT}`);
