@@ -2078,6 +2078,133 @@ async function mirrorNullRatingsToGolfDb(courseId) {
   return parsed || { success: true, ghinCourseId: id };
 }
 
+async function listRatedGolfDbCourseIds(options = {}) {
+  const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL;
+  const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
+  const limitRaw = Number(options.limit);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.floor(limitRaw))) : 500;
+
+  if (!callbackUrl) {
+    throw new Error('GHIN_IMPORT_CALLBACK_URL is required to list GolfDB rated courses.');
+  }
+  if (!callbackApiKey) {
+    throw new Error('GHIN_MIDDLEWARE_API_KEY is required to list GolfDB rated courses.');
+  }
+
+  const response = await runWithMirrorCallbackSlot(async () => fetch(callbackUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': callbackApiKey
+    },
+    body: JSON.stringify({
+      listRatedCourseIds: true,
+      mode: 'list-rated-course-ids',
+      limit
+    })
+  }));
+
+  const bodyText = await response.text();
+  let parsed = null;
+  try {
+    parsed = bodyText ? JSON.parse(bodyText) : null;
+  } catch (_) {
+    parsed = null;
+  }
+
+  if (!response.ok) {
+    const details = parsed ? JSON.stringify(parsed) : bodyText;
+    throw new Error(`List-rated GolfDB callback failed (${response.status}): ${details}`);
+  }
+
+  const courseIds = Array.isArray(parsed?.courseIds)
+    ? parsed.courseIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+
+  return {
+    courseIds,
+    count: courseIds.length
+  };
+}
+
+/**
+ * Null GolfDB ratings when CacheDB says the day-cache is expired / ratings already gone.
+ * Closes the hole where CacheDB NULL succeeded but mirror failed (next purge skips).
+ */
+async function reconcileOrphanGolfDbRatings(options = {}) {
+  if (!courseCachePolicy.isDayTtlMode()) {
+    return {
+      skipped: true,
+      reason: 'not_day_ttl',
+      checked: 0,
+      orphanCandidates: 0,
+      nulledCourses: 0,
+      mirrorFailures: [],
+      sampleCourseIds: []
+    };
+  }
+
+  await ensureCacheTables();
+  const now = options.now instanceof Date ? options.now : new Date();
+  const limitRaw = Number(options.limit);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.floor(limitRaw))) : 500;
+
+  const listed = await listRatedGolfDbCourseIds({ limit });
+  const courseIds = listed.courseIds || [];
+  let orphanCandidates = 0;
+  let nulledCourses = 0;
+  const mirrorFailures = [];
+  const sampleCourseIds = [];
+
+  for (const courseId of courseIds) {
+    const freshness = await getCachedCourseFreshness(courseId);
+    const hasRatings = freshness.exists ? await courseHasCachedRatings(courseId) : false;
+    const expiresAt = freshness.row?.expiresAt ? new Date(freshness.row.expiresAt) : null;
+    const cacheExpired = !freshness.exists || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime();
+    const isOrphan = cacheExpired || !hasRatings;
+
+    if (!isOrphan) {
+      continue;
+    }
+
+    orphanCandidates += 1;
+    if (sampleCourseIds.length < 20) {
+      sampleCourseIds.push(courseId);
+    }
+
+    try {
+      await mirrorNullRatingsToGolfDb(courseId);
+      nulledCourses += 1;
+    } catch (err) {
+      mirrorFailures.push({
+        courseId,
+        error: err && err.message ? err.message : String(err)
+      });
+      logger.warn('Orphan GolfDB ratings null failed', {
+        courseId,
+        error: err && err.message ? err.message : String(err)
+      });
+    }
+  }
+
+  logger.info('Orphan GolfDB ratings reconcile completed', {
+    checked: courseIds.length,
+    orphanCandidates,
+    nulledCourses,
+    mirrorFailureCount: mirrorFailures.length,
+    sampleCourseIds: sampleCourseIds.slice(0, 10)
+  });
+
+  return {
+    skipped: false,
+    checked: courseIds.length,
+    orphanCandidates,
+    nulledCourses,
+    mirrorFailures,
+    sampleCourseIds
+  };
+}
+
 /**
  * Phase 1: day-TTL expiry NULLs Course Rating / Slope in CacheDB + GolfDB.
  * Never DELETE public catalog rows (courses/tees/holes).
@@ -2199,6 +2326,8 @@ module.exports = {
   purgeExpiredCacheCourses,
   nullCacheDbTeeRatings,
   mirrorNullRatingsToGolfDb,
+  listRatedGolfDbCourseIds,
+  reconcileOrphanGolfDbRatings,
   markCourseCacheInvalidated,
   buildCacheUpsertPayload,
   buildMirrorPayload,

@@ -96,15 +96,17 @@ async function loadSecrets() {
       client.getSecret('GHIN-MIDDLEWARE-SECRET').then((s) => s?.value?.trim() || null).catch(() => null)
     ]);
 
-    const [courseWebhookUrl, courseWebhookToken, gpaWebhookUrl, gpaWebhookToken, webhookBaseUrl, importCallbackUrl, gpaCallbackUrl] = await Promise.all([
+    const [courseWebhookUrl, courseWebhookToken, gpaWebhookUrl, gpaWebhookToken, webhookBaseUrl, importCallbackUrl, gpaCallbackUrl, grokBotEventWebhookUrl, grokBotEventWebhookAuthorization] = await Promise.all([
       getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-URL', 'GHIN_COURSE_WEBHOOK_URL']),
       getFirstSecret(client, ['GHIN-COURSE-WEBHOOK-TOKEN', 'GHIN_COURSE_WEBHOOK_TOKEN']),
       getFirstSecret(client, ['GHIN-GPA-WEBHOOK-URL', 'GHIN_GPA_WEBHOOK_URL']),
       getFirstSecret(client, ['GHIN-GPA-WEBHOOK-TOKEN', 'GHIN_GPA_WEBHOOK_TOKEN']),
       getFirstSecret(client, ['GHIN-WEBHOOK-BASE-URL', 'GHIN_WEBHOOK_BASE_URL']),
       getFirstSecret(client, ['GHIN-IMPORT-CALLBACK-URL', 'GHIN_IMPORT_CALLBACK_URL']),
-      getFirstSecret(client, ['GHIN-GPA-CALLBACK-URL', 'GHIN_GPA_CALLBACK_URL'])
-    ]);
+      getFirstSecret(client, ['GHIN-GPA-CALLBACK-URL', 'GHIN_GPA_CALLBACK_URL']),
+      getFirstSecret(client, ['GROK-BOT-EVENT-WEBHOOK-URL', 'GROK_BOT_EVENT_WEBHOOK_URL']),
+      getFirstSecret(client, ['GROK-BOT-EVENT-WEBHOOK-AUTHORIZATION', 'GROK_BOT_EVENT_WEBHOOK_AUTHORIZATION'])
+    ])
 
     secretsCache = {
       APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights?.value,
@@ -119,6 +121,8 @@ async function loadSecrets() {
       GHIN_WEBHOOK_BASE_URL: webhookBaseUrl,
       GHIN_IMPORT_CALLBACK_URL: importCallbackUrl,
       GHIN_GPA_CALLBACK_URL: gpaCallbackUrl,
+      GROK_BOT_EVENT_WEBHOOK_URL: grokBotEventWebhookUrl,
+      GROK_BOT_EVENT_WEBHOOK_AUTHORIZATION: grokBotEventWebhookAuthorization,
       API_KEY_HASH_SECRET: apiKeySecret?.value,
       GHIN_CACHE_DB_SERVER: cacheDbServer,
       GHIN_CACHE_DB_NAME: cacheDbName,

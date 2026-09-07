@@ -1,6 +1,10 @@
 const { createLogger } = require('../utils/logger');
-const { purgeExpiredCacheCourses } = require('./courseSyncService');
+const {
+  purgeExpiredCacheCourses,
+  reconcileOrphanGolfDbRatings
+} = require('./courseSyncService');
 const courseCachePolicy = require('./courseCachePolicy');
+const { emitGrokBotEvent } = require('./grokBotEventWebhook');
 const { DateTime } = require('luxon');
 
 const logger = createLogger('ratingsExpiryScheduler');
@@ -60,25 +64,80 @@ function scheduleForTarget(targetTimeMs, tick) {
   }, delay);
 }
 
-async function runOnce() {
+function notifyExpiryResult(result, trigger) {
+  if (!result) {
+    emitGrokBotEvent({
+      type: 'ratings.expiry.failed',
+      meta: { trigger: trigger || 'unknown', error: 'run_returned_null' }
+    });
+    return;
+  }
+
+  if (result.skipped) {
+    return;
+  }
+
+  const nulledCourses = Number(result.nulledCourses || 0);
+  const mirrorFailureCount = Number(result.mirrorFailureCount || 0);
+  const orphanNulled = Number(result.orphanNulledCourses || 0);
+  const orphanFailures = Number(result.orphanMirrorFailureCount || 0);
+
+  const shouldNotify =
+    nulledCourses > 0 ||
+    mirrorFailureCount > 0 ||
+    orphanNulled > 0 ||
+    orphanFailures > 0;
+
+  if (!shouldNotify) {
+    return;
+  }
+
+  emitGrokBotEvent({
+    type: 'ratings.expiry',
+    meta: {
+      trigger: trigger || result.trigger || 'scheduled',
+      rounds: result.rounds || 0,
+      nulledCourses,
+      nulledTees: Number(result.nulledTees || 0),
+      mirrorFailureCount,
+      sampleCourseIds: Array.isArray(result.sampleCourseIds) ? result.sampleCourseIds.slice(0, 20) : [],
+      orphanChecked: Number(result.orphanChecked || 0),
+      orphanCandidates: Number(result.orphanCandidates || 0),
+      orphanNulledCourses: orphanNulled,
+      orphanMirrorFailureCount: orphanFailures,
+      orphanSampleCourseIds: Array.isArray(result.orphanSampleCourseIds)
+        ? result.orphanSampleCourseIds.slice(0, 20)
+        : []
+    }
+  });
+}
+
+async function runOnce(options = {}) {
+  const trigger = String(options.trigger || 'scheduled');
+
   if (inFlight) {
-    logger.debug('Skipping ratings-expiry tick; previous run still in-flight');
+    logger.debug('Skipping ratings-expiry tick; previous run still in-flight', { trigger });
     return null;
   }
 
   if (!courseCachePolicy.isDayTtlMode()) {
     logger.debug('Skipping ratings-expiry tick; not in day-ttl mode', {
+      trigger,
       cacheMode: courseCachePolicy.getCourseCacheMode()
     });
-    return { skipped: true, reason: 'not_day_ttl' };
+    return { skipped: true, reason: 'not_day_ttl', trigger };
   }
 
   inFlight = true;
   try {
     const batchSize = Number(process.env.GHIN_RATINGS_EXPIRY_BATCH_SIZE || 500);
     const maxRounds = Number(process.env.GHIN_RATINGS_EXPIRY_MAX_ROUNDS || 50);
+    const orphanLimit = Number(process.env.GHIN_RATINGS_ORPHAN_BATCH_SIZE || 500);
     const safeBatch = Number.isFinite(batchSize) ? Math.max(1, Math.floor(batchSize)) : 500;
     const safeRounds = Number.isFinite(maxRounds) ? Math.max(1, Math.floor(maxRounds)) : 50;
+    const safeOrphanLimit = Number.isFinite(orphanLimit)
+      ? Math.max(1, Math.min(2000, Math.floor(orphanLimit)))
+      : 500;
 
     let rounds = 0;
     let totalNulledCourses = 0;
@@ -96,7 +155,9 @@ async function runOnce() {
       });
 
       if (summary?.skipped) {
-        return summary;
+        const skipped = { ...summary, trigger };
+        logger.info('Ratings-expiry skipped', skipped);
+        return skipped;
       }
 
       totalNulledCourses += Number(summary?.nulledCourses || 0);
@@ -115,20 +176,90 @@ async function runOnce() {
       }
     }
 
+    let orphan = {
+      checked: 0,
+      orphanCandidates: 0,
+      nulledCourses: 0,
+      mirrorFailures: [],
+      sampleCourseIds: []
+    };
+    try {
+      const orphanRoundsMax = Number(process.env.GHIN_RATINGS_ORPHAN_MAX_ROUNDS || 20);
+      const safeOrphanRounds = Number.isFinite(orphanRoundsMax)
+        ? Math.max(1, Math.floor(orphanRoundsMax))
+        : 20;
+      for (let orphanRound = 0; orphanRound < safeOrphanRounds; orphanRound += 1) {
+        const batch = await reconcileOrphanGolfDbRatings({
+          limit: safeOrphanLimit,
+          now: new Date()
+        });
+        orphan.checked += Number(batch?.checked || 0);
+        orphan.orphanCandidates += Number(batch?.orphanCandidates || 0);
+        orphan.nulledCourses += Number(batch?.nulledCourses || 0);
+        if (Array.isArray(batch?.mirrorFailures) && batch.mirrorFailures.length) {
+          orphan.mirrorFailures.push(...batch.mirrorFailures);
+        }
+        if (Array.isArray(batch?.sampleCourseIds)) {
+          for (const id of batch.sampleCourseIds) {
+            if (orphan.sampleCourseIds.length < 20) orphan.sampleCourseIds.push(id);
+          }
+        }
+        if (!batch?.orphanCandidates || Number(batch.orphanCandidates) === 0) {
+          break;
+        }
+        // If we null fewer than limit, GolfDB rated set for this page is drained.
+        if (Number(batch.nulledCourses || 0) < safeOrphanLimit) {
+          break;
+        }
+      }
+    } catch (orphanErr) {
+      logger.error('Orphan GolfDB ratings reconcile failed', {
+        trigger,
+        error: orphanErr && orphanErr.message ? orphanErr.message : String(orphanErr)
+      });
+      orphan = {
+        checked: orphan.checked || 0,
+        orphanCandidates: orphan.orphanCandidates || 0,
+        nulledCourses: orphan.nulledCourses || 0,
+        mirrorFailures: [
+          ...(orphan.mirrorFailures || []),
+          {
+            courseId: null,
+            error: orphanErr && orphanErr.message ? orphanErr.message : String(orphanErr)
+          }
+        ],
+        sampleCourseIds: orphan.sampleCourseIds || []
+      };
+    }
+
     const result = {
       skipped: false,
+      trigger,
       rounds,
       nulledCourses: totalNulledCourses,
       nulledTees: totalNulledTees,
       mirrorFailureCount: allMirrorFailures.length,
       mirrorFailures: allMirrorFailures.slice(0, 20),
-      sampleCourseIds
+      sampleCourseIds,
+      orphanChecked: Number(orphan?.checked || 0),
+      orphanCandidates: Number(orphan?.orphanCandidates || 0),
+      orphanNulledCourses: Number(orphan?.nulledCourses || 0),
+      orphanMirrorFailureCount: Array.isArray(orphan?.mirrorFailures) ? orphan.mirrorFailures.length : 0,
+      orphanSampleCourseIds: Array.isArray(orphan?.sampleCourseIds) ? orphan.sampleCourseIds.slice(0, 20) : []
     };
 
-    logger.info('Scheduled ratings-expiry NULL completed', result);
+    logger.info('Ratings-expiry NULL completed', result);
+    notifyExpiryResult(result, trigger);
     return result;
   } catch (error) {
-    logger.error('Scheduled ratings-expiry NULL failed', { error: error.message });
+    logger.error('Scheduled ratings-expiry NULL failed', {
+      trigger,
+      error: error.message
+    });
+    emitGrokBotEvent({
+      type: 'ratings.expiry.failed',
+      meta: { trigger, error: error.message }
+    });
     return null;
   } finally {
     inFlight = false;
@@ -169,7 +300,7 @@ function startRatingsExpiryScheduler() {
       return;
     }
 
-    await runOnce();
+    await runOnce({ trigger: 'scheduled' });
 
     if (!isRunning) {
       return;
@@ -191,12 +322,25 @@ function startRatingsExpiryScheduler() {
   nextRunAtMs = initialRun.utc.toMillis();
   scheduleForTarget(nextRunAtMs, tick);
 
+  // Boot catch-up: if restart/deploy missed 12:05, clear overdue expired+rated (+ orphans) now.
+  setImmediate(() => {
+    if (!isRunning) {
+      return;
+    }
+    runOnce({ trigger: 'boot-catchup' }).catch((err) => {
+      logger.error('Boot catch-up ratings-expiry failed', {
+        error: err && err.message ? err.message : String(err)
+      });
+    });
+  });
+
   logger.info('Ratings-expiry scheduler started', {
     mode: 'daily-after-midnight',
     zone: DAY_TTL_ZONE,
     nextRunAtUtc: initialRun.utc.toISO(),
     nextRunAtLocal: initialRun.local.toISO(),
-    batchSize: Number(process.env.GHIN_RATINGS_EXPIRY_BATCH_SIZE || 500)
+    batchSize: Number(process.env.GHIN_RATINGS_EXPIRY_BATCH_SIZE || 500),
+    bootCatchup: true
   });
 
   return {
@@ -205,7 +349,8 @@ function startRatingsExpiryScheduler() {
     zone: DAY_TTL_ZONE,
     nextRunAtUtc: initialRun.utc.toISO(),
     nextRunAtLocal: initialRun.local.toISO(),
-    batchSize: Number(process.env.GHIN_RATINGS_EXPIRY_BATCH_SIZE || 500)
+    batchSize: Number(process.env.GHIN_RATINGS_EXPIRY_BATCH_SIZE || 500),
+    bootCatchup: true
   };
 }
 
