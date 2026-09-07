@@ -222,12 +222,33 @@ function isWebhookRequest(req) {
   return typeof req.path === 'string' && req.path.startsWith('/api/v1/webhooks/');
 }
 
+
+function redactUrlSecrets(urlValue) {
+  if (!urlValue || typeof urlValue !== 'string') {
+    return urlValue || null;
+  }
+  try {
+    // Relative or absolute; strip token query param without throwing on path-only values.
+    const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(urlValue);
+    const u = new URL(urlValue, hasProtocol ? undefined : 'http://local.invalid');
+    if (u.searchParams.has('token')) {
+      u.searchParams.set('token', 'REDACTED');
+    }
+    if (hasProtocol) {
+      return u.toString();
+    }
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch (_) {
+    return String(urlValue).replace(/([?&]token=)[^&]*/gi, '$1REDACTED');
+  }
+}
+
 function logWebhookIngress(req, _res, next) {
   if (isWebhookRequest(req)) {
     logger.info('Webhook ingress hit', {
       method: req.method,
       path: req.path,
-      originalUrl: req.originalUrl,
+      originalUrl: redactUrlSecrets(req.originalUrl),
       contentType: req.get('content-type') || null,
       contentLength: req.get('content-length') || null,
       ip: req.ip,

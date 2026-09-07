@@ -61,6 +61,27 @@ function initializeAppInsights() {
 
     const client = appInsights.defaultClient;
 
+
+function scrubTelemetrySecrets(envelope) {
+  try {
+    const data = envelope?.data?.baseData;
+    if (!data) return true;
+    const scrub = (value) => {
+      if (!value || typeof value !== 'string') return value;
+      return value.replace(/([?&]token=)[^&]*/gi, '$1REDACTED');
+    };
+    if (data.url) data.url = scrub(data.url);
+    if (data.name) data.name = scrub(data.name);
+    if (data.target) data.target = scrub(data.target);
+    if (data.data) data.data = scrub(data.data);
+  } catch (_) {
+    // never block telemetry on scrub failure
+  }
+  return true;
+}
+
+    client.addTelemetryProcessor(scrubTelemetrySecrets);
+
     // Connection-string / ikey ingestion. Do not enable AAD without setAzureTokenCredential.
     client.context.tags[client.context.keys.cloudRole] = 'ghin-middleware-api';
     client.context.tags[client.context.keys.cloudRoleInstance] = process.env.WEBSITE_INSTANCE_ID || 'local';
