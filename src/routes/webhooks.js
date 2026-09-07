@@ -5,6 +5,7 @@ const { createLogger } = require('../utils/logger');
 const usaGhinApiClient = require('../services/usaGhinApiClient');
 const { processCourseSync, reconcileCourses, reconcileAllCandidates, getOrFetchCourse, markCourseCacheInvalidated, purgeExpiredCacheCourses } = require('../services/courseSyncService');
 const { ensureCourseWebhook, getCourseWebhookStatus, ensureGpaWebhook, getGpaWebhookStatus } = require('../services/ghinWebhookService');
+const { emitGrokBotEvent } = require('../services/grokBotEventWebhook');
 const { loadSecrets } = require('../config/secrets');
 const { getMetricsSnapshot } = require('../services/syncMetricsService');
 const { getDurableMetricsSnapshot } = require('../services/reconciliationHistoryService');
@@ -38,6 +39,33 @@ function getWebhookScalar(payload, keys) {
   }
 
   return null;
+}
+
+
+function isLikelyInternalCourseWebhookProbe(req) {
+  const ua = String(req.get('user-agent') || '').toLowerCase();
+  return (
+    ua.includes('curl/') ||
+    ua.includes('python-urllib') ||
+    ua.includes('python-requests') ||
+    ua.includes('postmanruntime') ||
+    ua.includes('insomnia')
+  );
+}
+
+function notifyCourseWebhookEvent(type, req, meta = {}) {
+  if (isLikelyInternalCourseWebhookProbe(req)) {
+    return;
+  }
+  emitGrokBotEvent({
+    type,
+    meta: {
+      ...meta,
+      payloadKeys: Object.keys(req.body || {}),
+      userAgent: req.get('user-agent') || null,
+      ip: req.ip || null
+    }
+  });
 }
 
 function getCourseIdFromPayload(payload) {
@@ -201,8 +229,21 @@ router.post(
 
       if (fetchResult.notFound || !fetchResult.course) {
         logger.warn('GHIN webhook referenced unknown course id', { courseId });
+        notifyCourseWebhookEvent('course.webhook.ignored', req, {
+          courseId,
+          status: 'ignored',
+          reason: 'course_not_found'
+        });
         return res.status(202).json({ status: 'ignored', reason: 'course_not_found', courseId });
       }
+
+      notifyCourseWebhookEvent('course.webhook.accepted', req, {
+        courseId,
+        status: 'accepted',
+        source: fetchResult.source || null,
+        cacheMode: fetchResult.cacheMode || null,
+        mirrorStatus: 'ok'
+      });
 
       return res.status(202).json({
         status: 'accepted',
@@ -215,6 +256,14 @@ router.post(
       const status = error.status || 500;
       logger.error('Course webhook processing failed', {
         status,
+        code: error.code || 'WEBHOOK_PROCESSING_ERROR',
+        error: error.message
+      });
+
+      notifyCourseWebhookEvent('course.webhook.failed', req, {
+        courseId: getCourseIdFromPayload(req.body),
+        status: 'failed',
+        httpStatus: status,
         code: error.code || 'WEBHOOK_PROCESSING_ERROR',
         error: error.message
       });
