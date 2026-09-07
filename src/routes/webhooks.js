@@ -53,11 +53,11 @@ function isLikelyInternalCourseWebhookProbe(req) {
   );
 }
 
-function notifyCourseWebhookEvent(type, req, meta = {}) {
+async function notifyCourseWebhookEvent(type, req, meta = {}) {
   if (isLikelyInternalCourseWebhookProbe(req)) {
-    return;
+    return { ok: false, skipped: true, reason: 'internal_probe' };
   }
-  emitGrokBotEvent({
+  return emitGrokBotEvent({
     type,
     meta: {
       ...meta,
@@ -229,7 +229,7 @@ router.post(
 
       if (fetchResult.notFound || !fetchResult.course) {
         logger.warn('GHIN webhook referenced unknown course id', { courseId });
-        notifyCourseWebhookEvent('course.webhook.ignored', req, {
+        await notifyCourseWebhookEvent('course.webhook.ignored', req, {
           courseId,
           status: 'ignored',
           reason: 'course_not_found'
@@ -237,7 +237,7 @@ router.post(
         return res.status(202).json({ status: 'ignored', reason: 'course_not_found', courseId });
       }
 
-      notifyCourseWebhookEvent('course.webhook.accepted', req, {
+      await notifyCourseWebhookEvent('course.webhook.accepted', req, {
         courseId,
         status: 'accepted',
         source: fetchResult.source || null,
@@ -260,7 +260,7 @@ router.post(
         error: error.message
       });
 
-      notifyCourseWebhookEvent('course.webhook.failed', req, {
+      await notifyCourseWebhookEvent('course.webhook.failed', req, {
         courseId: getCourseIdFromPayload(req.body),
         status: 'failed',
         httpStatus: status,

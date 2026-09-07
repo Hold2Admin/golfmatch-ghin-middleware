@@ -1,6 +1,8 @@
 /**
- * Fire-and-forget event notify to Grok Bot webhook (Cursor-hosted).
+ * Event notify to Grok Bot webhook (Cursor-hosted).
  * No-op when URL env is missing. Never throws to callers.
+ * Returns a Promise so request handlers can await delivery before ending the response
+ * (fire-and-forget fetch can be aborted when the App Service request completes).
  */
 
 function getWebhookConfig() {
@@ -11,17 +13,19 @@ function getWebhookConfig() {
 
 /**
  * @param {{ type: string, userId?: number|null, email?: string|null, name?: string|null, at?: string|Date|null, meta?: object }} event
+ * @param {{ timeoutMs?: number }} [options]
+ * @returns {Promise<{ ok: boolean, skipped?: boolean, status?: number|null, error?: string|null }>}
  */
-function emitGrokBotEvent(event) {
+async function emitGrokBotEvent(event, options = {}) {
   try {
     const { url, authorization } = getWebhookConfig();
     if (!url) {
-      return;
+      return { ok: false, skipped: true, status: null, error: 'missing_url' };
     }
 
     const type = String(event?.type || '').trim();
     if (!type) {
-      return;
+      return { ok: false, skipped: true, status: null, error: 'missing_type' };
     }
 
     const atValue = event?.at ? new Date(event.at) : new Date();
@@ -45,15 +49,29 @@ function emitGrokBotEvent(event) {
       headers.Authorization = authorization;
     }
 
-    fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    }).catch((err) => {
-      console.error('[grokBotEventWebhook] emit failed', err?.message || err);
-    });
+    const timeoutMs = Number(options.timeoutMs);
+    const safeTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 4000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), safeTimeout);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        console.error('[grokBotEventWebhook] emit non-2xx', response.status, type);
+        return { ok: false, skipped: false, status: response.status, error: 'non_2xx' };
+      }
+      return { ok: true, skipped: false, status: response.status, error: null };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (err) {
-    console.error('[grokBotEventWebhook] emit setup failed', err?.message || err);
+    console.error('[grokBotEventWebhook] emit failed', err?.message || err);
+    return { ok: false, skipped: false, status: null, error: String(err?.message || err) };
   }
 }
 
