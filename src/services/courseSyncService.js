@@ -1812,12 +1812,104 @@ async function getOrFetchCourse(courseId, options = {}) {
 }
 
 
+async function nullCacheDbTeeRatings(courseId) {
+  const sql = database.sql;
+  const id = String(courseId || '').trim();
+  if (!id) {
+    return { courseId: id, nulledTees: 0 };
+  }
+
+  const rows = await database.query(
+    `UPDATE dbo.GHIN_Tees
+     SET CourseRating18 = NULL,
+         SlopeRating18 = NULL,
+         CourseRatingF9 = NULL,
+         SlopeRatingF9 = NULL,
+         CourseRatingB9 = NULL,
+         SlopeRatingB9 = NULL,
+         UpdatedAt = GETUTCDATE()
+     WHERE CourseId = @courseId
+       AND (
+         CourseRating18 IS NOT NULL
+         OR SlopeRating18 IS NOT NULL
+         OR CourseRatingF9 IS NOT NULL
+         OR SlopeRatingF9 IS NOT NULL
+         OR CourseRatingB9 IS NOT NULL
+         OR SlopeRatingB9 IS NOT NULL
+       );
+     SELECT @@ROWCOUNT AS nulledCount;`,
+    { courseId: { type: sql.VarChar(50), value: id } }
+  );
+
+  const nulledTees = Number(
+    rows?.[rows.length - 1]?.nulledCount
+    || rows?.[0]?.nulledCount
+    || 0
+  );
+  return { courseId: id, nulledTees };
+}
+
+async function mirrorNullRatingsToGolfDb(courseId) {
+  const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL;
+  const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
+  const id = String(courseId || '').trim();
+
+  if (!callbackUrl) {
+    throw new Error('GHIN_IMPORT_CALLBACK_URL is required to null GolfDB runtime ratings.');
+  }
+  if (!callbackApiKey) {
+    throw new Error('GHIN_MIDDLEWARE_API_KEY is required to null GolfDB runtime ratings.');
+  }
+  if (!id) {
+    return { courseId: id, skipped: true, reason: 'missing_course_id' };
+  }
+
+  const response = await runWithMirrorCallbackSlot(async () => fetch(callbackUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': callbackApiKey
+    },
+    body: JSON.stringify({
+      nullRatings: true,
+      ghinCourseId: id,
+      courseId: id
+    })
+  }));
+
+  const bodyText = await response.text();
+  let parsed = null;
+  try {
+    parsed = bodyText ? JSON.parse(bodyText) : null;
+  } catch (_) {
+    parsed = null;
+  }
+
+  if (!response.ok) {
+    const details = parsed ? JSON.stringify(parsed) : bodyText;
+    throw new Error(`Null-ratings mirror callback failed (${response.status}): ${details}`);
+  }
+
+  return parsed || { success: true, ghinCourseId: id };
+}
+
+/**
+ * Phase 1: day-TTL expiry NULLs Course Rating / Slope in CacheDB + GolfDB.
+ * Never DELETE public catalog rows (courses/tees/holes).
+ */
 async function purgeExpiredCacheCourses(options = {}) {
   if (!courseCachePolicy.isDayTtlMode()) {
     return {
       skipped: true,
       reason: 'not_day_ttl',
-      cacheMode: courseCachePolicy.getCourseCacheMode()
+      cacheMode: courseCachePolicy.getCourseCacheMode(),
+      nulledCourses: 0,
+      nulledTees: 0,
+      mirrorFailures: [],
+      courseIds: [],
+      deletedCourses: 0,
+      deletedTees: 0,
+      deletedHoles: 0
     };
   }
 
@@ -1825,6 +1917,7 @@ async function purgeExpiredCacheCourses(options = {}) {
   const sql = database.sql;
   const now = options.now instanceof Date ? options.now : new Date();
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit)) : 500;
+  const mirror = options.mirror !== false;
 
   const expired = await database.query(
     `SELECT TOP (@limit) CourseId AS courseId
@@ -1841,55 +1934,57 @@ async function purgeExpiredCacheCourses(options = {}) {
   if (courseIds.length === 0) {
     return {
       skipped: false,
+      nulledCourses: 0,
+      nulledTees: 0,
+      mirrorFailures: [],
+      courseIds: [],
       deletedCourses: 0,
       deletedTees: 0,
-      deletedHoles: 0,
-      courseIds: []
+      deletedHoles: 0
     };
   }
 
-  let deletedHoles = 0;
-  let deletedTees = 0;
-  let deletedCourses = 0;
+  let nulledCourses = 0;
+  let nulledTees = 0;
+  const mirrorFailures = [];
 
   for (const courseId of courseIds) {
-    const holeRows = await database.query(
-      `DELETE h
-       FROM dbo.GHIN_Holes h
-       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
-       WHERE t.CourseId = @courseId;
-       SELECT @@ROWCOUNT AS deletedCount;`,
-      { courseId: { type: sql.VarChar(50), value: courseId } }
-    );
-    const teeRows = await database.query(
-      `DELETE FROM dbo.GHIN_Tees WHERE CourseId = @courseId;
-       SELECT @@ROWCOUNT AS deletedCount;`,
-      { courseId: { type: sql.VarChar(50), value: courseId } }
-    );
-    const courseRows = await database.query(
-      `DELETE FROM dbo.GHIN_Courses WHERE CourseId = @courseId;
-       SELECT @@ROWCOUNT AS deletedCount;`,
-      { courseId: { type: sql.VarChar(50), value: courseId } }
-    );
+    const cacheResult = await nullCacheDbTeeRatings(courseId);
+    nulledCourses += 1;
+    nulledTees += cacheResult.nulledTees;
 
-    deletedHoles += Number(holeRows?.[holeRows.length - 1]?.deletedCount || holeRows?.[0]?.deletedCount || 0);
-    deletedTees += Number(teeRows?.[teeRows.length - 1]?.deletedCount || teeRows?.[0]?.deletedCount || 0);
-    deletedCourses += Number(courseRows?.[courseRows.length - 1]?.deletedCount || courseRows?.[0]?.deletedCount || 0);
+    if (mirror) {
+      try {
+        await mirrorNullRatingsToGolfDb(courseId);
+      } catch (err) {
+        mirrorFailures.push({
+          courseId,
+          error: err && err.message ? err.message : String(err)
+        });
+        logger.warn('Failed to null GolfDB runtime ratings after CacheDB ratings expiry', {
+          courseId,
+          error: err && err.message ? err.message : String(err)
+        });
+      }
+    }
   }
 
-  logger.info('Purged expired CacheDB course working-set rows', {
-    deletedCourses,
-    deletedTees,
-    deletedHoles,
+  logger.info('Expired CacheDB/GolfDB course ratings NULLed (public catalog retained)', {
+    nulledCourses,
+    nulledTees,
+    mirrorFailureCount: mirrorFailures.length,
     sampleCourseIds: courseIds.slice(0, 10)
   });
 
   return {
     skipped: false,
-    deletedCourses,
-    deletedTees,
-    deletedHoles,
-    courseIds
+    nulledCourses,
+    nulledTees,
+    mirrorFailures,
+    courseIds,
+    deletedCourses: 0,
+    deletedTees: 0,
+    deletedHoles: 0
   };
 }
 
@@ -1897,6 +1992,8 @@ module.exports = {
   getCachedCourseFreshness,
   getOrFetchCourse,
   purgeExpiredCacheCourses,
+  nullCacheDbTeeRatings,
+  mirrorNullRatingsToGolfDb,
   markCourseCacheInvalidated,
   buildCacheUpsertPayload,
   buildMirrorPayload,

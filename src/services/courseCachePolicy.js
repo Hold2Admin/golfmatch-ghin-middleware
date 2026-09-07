@@ -21,8 +21,10 @@ function isDayTtlMode() {
 }
 
 /**
- * Romeo day-cache: valid until next local midnight, then must re-query.
- * Legacy mode keeps the historical ~365d replica TTL.
+ * ExpiresAt = ratings freshness only (Course Rating / Slope).
+ * Day-ttl: valid until next local midnight; then ratings must be NULLed (not kept stale)
+ * and re-queried on next user need. Does not authorize deleting public catalog rows.
+ * Legacy mode keeps the historical ~365d ExpiresAt window.
  */
 function computeCacheExpiresAt(now = new Date(), options = {}) {
   if (options.expiry instanceof Date) {
