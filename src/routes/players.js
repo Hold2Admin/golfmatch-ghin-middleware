@@ -4,7 +4,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { body, param, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinPlayer } = require('../services/transformers/playerTransformer');
@@ -418,5 +418,82 @@ router.delete(
     }
   }
 );
+
+
+router.get(
+  '/:ghinNumber/privacy-settings',
+  [
+    ghinNumberValidator(param('ghinNumber'))
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid GHIN number format',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumber } = req.params;
+
+    try {
+      logger.info(`Fetching privacy settings for ${ghinNumber}`);
+      const result = await ghinClient.getGolferPrivacySettings(ghinNumber);
+      return res.json(result);
+    } catch (error) {
+      logger.error('Error fetching golfer privacy settings', { ghinNumber, error: error.message });
+      return res.status(error.status || 502).json({
+        error: {
+          code: error.code || 'GHIN_API_ERROR',
+          message: error.message || 'Failed to fetch golfer privacy settings',
+          retryable: (error.status || 502) >= 500
+        }
+      });
+    }
+  }
+);
+
+router.get(
+  '/:ghinNumber/scores',
+  [
+    ghinNumberValidator(param('ghinNumber')),
+    query('club_id').optional({ nullable: true }).isString().trim().notEmpty()
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid golfer scores request',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumber } = req.params;
+    const clubId = req.query.club_id || req.query.clubId || null;
+
+    try {
+      logger.info(`Fetching golfer scores for ${ghinNumber}`, { club_id: clubId || null });
+      const result = await ghinClient.getGolferScores(ghinNumber, { club_id: clubId });
+      // Pass through USGA visibility fields unchanged.
+      return res.json(result);
+    } catch (error) {
+      logger.error('Error fetching golfer scores', { ghinNumber, error: error.message });
+      return res.status(error.status || 502).json({
+        error: {
+          code: error.code || 'GHIN_API_ERROR',
+          message: error.message || 'Failed to fetch golfer scores',
+          retryable: (error.status || 502) >= 500
+        }
+      });
+    }
+  }
+);
+
 
 module.exports = router;

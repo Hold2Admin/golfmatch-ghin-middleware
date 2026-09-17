@@ -351,6 +351,40 @@ async function getScore(scoreId) {
   return usaGhinApiClient.getScore(scoreId);
 }
 
+
+async function getGolferPrivacySettings(golferId) {
+  if (config.ghin.useMock) {
+    logger.info('[MOCK] Fetching golfer privacy settings', { golferId });
+    return {
+      privacy_settings: {
+        scoring_record_visibility: 'everyone'
+      }
+    };
+  }
+
+  logger.info('[LIVE] Fetching golfer privacy settings via USGA API', { golferId });
+  return usaGhinApiClient.getGolferPrivacySettings(golferId);
+}
+
+async function getGolferScores(golferId, params = {}) {
+  if (config.ghin.useMock) {
+    logger.info('[MOCK] Fetching golfer scores', { golferId, club_id: params.club_id || params.clubId || null });
+    return {
+      scoring_record_visibility: 'everyone',
+      scoring_record_visibility_message: '',
+      recent_scores: [],
+      revision_scores: []
+    };
+  }
+
+  logger.info('[LIVE] Fetching golfer scores via USGA API', {
+    golferId,
+    club_id: params.club_id || params.clubId || null
+  });
+  return usaGhinApiClient.getGolferScores(golferId, params);
+}
+
+
 async function getCourseHandicaps(params = {}) {
   if (config.ghin.useMock) {
     logger.info('[MOCK] Fetching course handicaps', params);
@@ -415,6 +449,8 @@ module.exports = {
   postScore,
   searchScores,
   getScore,
+  getGolferPrivacySettings,
+  getGolferScores,
   getCourseHandicaps,
   getManualCourseHandicap,
   getPlayingHandicaps

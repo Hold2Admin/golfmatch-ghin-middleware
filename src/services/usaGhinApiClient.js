@@ -94,6 +94,8 @@ const ALLOWLIST = [
   { method: 'POST', pattern: /^\/users\/login\.json$/ },
   { method: 'GET',  pattern: /^\/golfers\/search\.json$/ },
   { method: 'GET',  pattern: /^\/golfers\/\d+\.json$/ },
+  { method: 'GET',  pattern: /^\/golfers\/\d+\/privacy_settings\.json$/ },
+  { method: 'GET',  pattern: /^\/golfers\/\d+\/scores\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/search\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/\d+\.json$/ },
   { method: 'GET',  pattern: /^\/Courses\/[^/]+\/TeeSetRatingsForScorePosting\.json$/ },
@@ -661,6 +663,32 @@ async function getScore(scoreId) {
   return request('GET', `/scores/${encodeURIComponent(normalizedScoreId)}.json`);
 }
 
+
+async function getGolferPrivacySettings(golferId) {
+  const normalizedGolferId = String(golferId || '').trim();
+  if (!/^\d{1,10}$/.test(normalizedGolferId)) {
+    throw Object.assign(new Error('golferId must be 1-10 digits'), { status: 400, code: 'INVALID_GOLFER_ID' });
+  }
+  return request('GET', `/golfers/${encodeURIComponent(normalizedGolferId)}/privacy_settings.json`);
+}
+
+async function getGolferScores(golferId, params = {}) {
+  const normalizedGolferId = String(golferId || '').trim();
+  if (!/^\d{1,10}$/.test(normalizedGolferId)) {
+    throw Object.assign(new Error('golferId must be 1-10 digits'), { status: 400, code: 'INVALID_GOLFER_ID' });
+  }
+
+  const query = {};
+  const clubId = params.club_id ?? params.clubId;
+  if (clubId !== undefined && clubId !== null && String(clubId).trim() !== '') {
+    query.club_id = String(clubId).trim();
+  }
+
+  // Pass through unchanged USGA payload (includes scoring_record_visibility fields).
+  return request('GET', `/golfers/${encodeURIComponent(normalizedGolferId)}/scores.json`, query);
+}
+
+
 function _normalizeSupportingTeeSetSide(value) {
   const normalized = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
   if (normalized === 'F9') return 'F9';
@@ -1115,6 +1143,8 @@ module.exports = {
   postScore,
   searchScores,
   getScore,
+  getGolferPrivacySettings,
+  getGolferScores,
   getCourseHandicaps,
   getManualCourseHandicap,
   getPlayingHandicaps,
