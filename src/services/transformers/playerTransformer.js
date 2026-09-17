@@ -94,6 +94,8 @@ function transformGhinPlayer(ghinPlayer) {
     handicapIndexDisplay,
     handicapFlags,
     lowHandicapIndex: ghinPlayer.lowHandicapIndex || null,
+    lowHandicapIndexDisplay: ghinPlayer.lowHandicapIndexDisplay || null,
+    lowHandicapIndexDate: ghinPlayer.lowHandicapIndexDate || null,
     trendIndicator: ghinPlayer.trendIndicator || null,
     lastRevisionDate: ghinPlayer.lastRevisionDate,
     

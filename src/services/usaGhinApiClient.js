@@ -837,6 +837,10 @@ function _normalizeGolfer(g) {
   );
   const handicapIndex = _parseHandicapIndex(g.handicap_index ?? g.hi_display ?? g.hi ?? null);
   const lowHi = _parseHandicapIndex(g.low_hi !== undefined ? String(g.low_hi) : null);
+  const lowHiDisplay = String(g.low_hi_display ?? g.low_hi ?? '').trim() || null;
+  // USGA golfer search returns rev_date (revision) and low_hi_date (Low H.I. date) — distinct fields.
+  const revisionRaw = g.rev_date ?? g.revision_date ?? g.last_revision_date ?? null;
+  const lowHiDateRaw = g.low_hi_date ?? g.low_handicap_index_date ?? null;
   const status = _normalizeGolferStatus(g.status, {
     hiModified,
     hiWithdrawn,
@@ -860,8 +864,10 @@ function _normalizeGolfer(g) {
       noHandicap: handicapIndexDisplay === 'NH'
     },
     lowHandicapIndex: lowHi,
+    lowHandicapIndexDisplay: lowHiDisplay,
+    lowHandicapIndexDate: lowHiDateRaw ? String(lowHiDateRaw).slice(0, 10) : null,
     trendIndicator:   g.hi_trend    ?? null,
-    lastRevisionDate: g.revision_date ? new Date(g.revision_date).toISOString() : null,
+    lastRevisionDate: revisionRaw ? new Date(revisionRaw).toISOString() : null,
     gender:           g.gender      ?? null,
     status,
     membershipStatus: (g.status ?? '').trim().toLowerCase() || null
