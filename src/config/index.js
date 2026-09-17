@@ -57,8 +57,9 @@ module.exports = {
     options: {
       encrypt: true,
       trustServerCertificate: false,
-      connectionTimeout: 30000,
-      requestTimeout: 30000
+      connectionTimeout: Number(process.env.GHIN_CACHE_DB_CONNECT_TIMEOUT_MS) || 60000,
+      // Ratings purge / CacheDB batches must not die on a single 30s stall (USGA day-cache requirement).
+      requestTimeout: Number(process.env.GHIN_CACHE_DB_REQUEST_TIMEOUT_MS) || 120000
     }
   },
 

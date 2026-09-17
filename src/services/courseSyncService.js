@@ -2004,34 +2004,36 @@ async function nullCacheDbTeeRatings(courseId) {
     return { courseId: id, nulledTees: 0 };
   }
 
-  const rows = await database.query(
-    `UPDATE dbo.GHIN_Tees
-     SET CourseRating18 = NULL,
-         SlopeRating18 = NULL,
-         CourseRatingF9 = NULL,
-         SlopeRatingF9 = NULL,
-         CourseRatingB9 = NULL,
-         SlopeRatingB9 = NULL,
-         UpdatedAt = GETUTCDATE()
-     WHERE CourseId = @courseId
-       AND (
-         CourseRating18 IS NOT NULL
-         OR SlopeRating18 IS NOT NULL
-         OR CourseRatingF9 IS NOT NULL
-         OR SlopeRatingF9 IS NOT NULL
-         OR CourseRatingB9 IS NOT NULL
-         OR SlopeRatingB9 IS NOT NULL
-       );
-     SELECT @@ROWCOUNT AS nulledCount;`,
-    { courseId: { type: sql.VarChar(50), value: id } }
-  );
+  return runWithCacheWriteRetry(id, async () => {
+    const rows = await database.query(
+      `UPDATE dbo.GHIN_Tees
+       SET CourseRating18 = NULL,
+           SlopeRating18 = NULL,
+           CourseRatingF9 = NULL,
+           SlopeRatingF9 = NULL,
+           CourseRatingB9 = NULL,
+           SlopeRatingB9 = NULL,
+           UpdatedAt = GETUTCDATE()
+       WHERE CourseId = @courseId
+         AND (
+           CourseRating18 IS NOT NULL
+           OR SlopeRating18 IS NOT NULL
+           OR CourseRatingF9 IS NOT NULL
+           OR SlopeRatingF9 IS NOT NULL
+           OR CourseRatingB9 IS NOT NULL
+           OR SlopeRatingB9 IS NOT NULL
+         );
+       SELECT @@ROWCOUNT AS nulledCount;`,
+      { courseId: { type: sql.VarChar(50), value: id } }
+    );
 
-  const nulledTees = Number(
-    rows?.[rows.length - 1]?.nulledCount
-    || rows?.[0]?.nulledCount
-    || 0
-  );
-  return { courseId: id, nulledTees };
+    const nulledTees = Number(
+      rows?.[rows.length - 1]?.nulledCount
+      || rows?.[0]?.nulledCount
+      || 0
+    );
+    return { courseId: id, nulledTees };
+  });
 }
 
 async function mirrorNullRatingsToGolfDb(courseId) {
@@ -2231,7 +2233,7 @@ async function purgeExpiredCacheCourses(options = {}) {
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit)) : 500;
   const mirror = options.mirror !== false;
 
-  const expired = await database.query(
+  const expired = await runWithCacheWriteRetry('purge-expired-select', async () => database.query(
     `SELECT TOP (@limit) c.CourseId AS courseId
      FROM dbo.GHIN_Courses c
      WHERE c.ExpiresAt <= @now
@@ -2253,7 +2255,7 @@ async function purgeExpiredCacheCourses(options = {}) {
       limit: { type: sql.Int, value: limit },
       now: { type: sql.DateTime2, value: now }
     }
-  );
+  ));
 
   const courseIds = (expired || []).map((row) => String(row.courseId)).filter(Boolean);
   if (courseIds.length === 0) {
