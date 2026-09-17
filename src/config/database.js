@@ -17,8 +17,8 @@ function getDbConfig() {
       encrypt: true,
       trustServerCertificate: false,
       enableArithAbort: true,
-      connectTimeout: Number(process.env.GHIN_CACHE_DB_CONNECT_TIMEOUT_MS) || 60000,
-      requestTimeout: Number(process.env.GHIN_CACHE_DB_REQUEST_TIMEOUT_MS) || 120000
+      connectTimeout: 30000,
+      requestTimeout: 30000
     },
     pool: {
       max: 10,
