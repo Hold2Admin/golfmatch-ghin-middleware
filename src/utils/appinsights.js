@@ -140,6 +140,7 @@ function trackDependency(name, commandName, duration, success, resultCode) {
     client.trackDependency({
       target: name,
       name: commandName,
+      data: commandName,
       duration,
       success,
       resultCode,

@@ -8,6 +8,7 @@
 
 const config = require('../config');
 const { createLogger } = require('../utils/logger');
+const { trackDependency } = require('../utils/appinsights');
 
 const logger = createLogger('usaGhinApiClient');
 
@@ -53,14 +54,30 @@ function getRequestTimeoutMs() {
 async function fetchWithTimeout(url, options = {}, timeoutMs = getRequestTimeoutMs()) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  const method = String(options.method || 'GET').toUpperCase();
+  let parsedHost = 'usga-ghin';
+  let parsedPath = url;
+  try {
+    const parsed = new URL(String(url));
+    parsedHost = parsed.host || parsedHost;
+    // Path only — drop query (may contain tokens); keep method+pathname for digs.
+    parsedPath = `${method} ${parsed.pathname}`;
+  } catch {
+    parsedPath = `${method} ${String(url).split('?')[0]}`;
+  }
 
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...options,
       signal: controller.signal
     });
+    trackDependency(parsedHost, parsedPath, Date.now() - started, response.ok, response.status);
+    return response;
   } catch (error) {
-    if (error && error.name === 'AbortError') {
+    const isAbort = error && error.name === 'AbortError';
+    trackDependency(parsedHost, parsedPath, Date.now() - started, false, isAbort ? 408 : 0);
+    if (isAbort) {
       throw new Error(`USGA API timeout after ${timeoutMs}ms for ${options.method || 'GET'} ${url}`);
     }
     throw error;
