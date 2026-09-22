@@ -1,39 +1,34 @@
 const { DateTime } = require('luxon');
 
-const LEGACY_TTL_DAYS = 365;
-const CACHE_MODE_LEGACY = 'legacy';
 const CACHE_MODE_DAY_TTL = 'day-ttl';
+// Kept as exported constants for callers/tests; production ratings expiry is day-ttl only.
+const CACHE_MODE_LEGACY = 'legacy';
+const LEGACY_TTL_DAYS = 365;
 const SOURCE_USGA_FETCH = 'usga_fetch';
 const SOURCE_WEBHOOK_REFETCH = 'webhook_refetch';
 const SOURCE_LEGACY_RECON = 'legacy_recon';
 const DAY_TTL_ZONE = process.env.GHIN_COURSE_DAY_TTL_ZONE || 'America/New_York';
 
+/**
+ * Ratings cache mode is locked to day-ttl so local cannot diverge from prod.
+ * GHIN_COURSE_CACHE_MODE is ignored for behavior (legacy/unset/anything else still day-ttl).
+ */
 function getCourseCacheMode() {
-  // Unset/empty must be day-ttl for USGA day-cache. Legacy only when env explicitly sets legacy.
-  const raw = String(process.env.GHIN_COURSE_CACHE_MODE || '').trim().toLowerCase();
-  if (raw === CACHE_MODE_LEGACY || raw === 'legacy') {
-    return CACHE_MODE_LEGACY;
-  }
   return CACHE_MODE_DAY_TTL;
 }
 
 function isDayTtlMode() {
-  return getCourseCacheMode() === CACHE_MODE_DAY_TTL;
+  return true;
 }
 
 /**
  * ExpiresAt = ratings freshness only (Course Rating / Slope).
- * Day-ttl: valid until next local midnight; then ratings must be NULLed (not kept stale)
- * and re-queried on next user need. Does not authorize deleting public catalog rows.
- * Legacy mode keeps the historical ~365d ExpiresAt window.
+ * Always valid until next local midnight in DAY_TTL_ZONE; then ratings must be NULLed
+ * (not kept stale) and re-queried on next user need. Does not authorize deleting public catalog rows.
  */
 function computeCacheExpiresAt(now = new Date(), options = {}) {
   if (options.expiry instanceof Date) {
     return options.expiry;
-  }
-
-  if (!isDayTtlMode()) {
-    return new Date(now.getTime() + LEGACY_TTL_DAYS * 24 * 60 * 60 * 1000);
   }
 
   const zone = options.zone || DAY_TTL_ZONE;
@@ -45,11 +40,6 @@ function computeCacheExpiresAt(now = new Date(), options = {}) {
 function resolveCacheSource(explicitSource, options = {}) {
   if (explicitSource) {
     return String(explicitSource);
-  }
-
-  if (!isDayTtlMode()) {
-    // Preserve historical default label used by existing writers.
-    return options.legacyDefault || 'USGA_WEBHOOK';
   }
 
   if (options.fromWebhook) {

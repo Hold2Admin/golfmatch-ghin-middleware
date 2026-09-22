@@ -465,7 +465,7 @@ async function bootstrap() {
     });
     logger.info(`✅ GHIN Middleware API listening on port ${PORT}`);
     logger.info(`🌐 GHIN environment: ${getGhinEnvironmentLabel()} (${process.env.GHIN_API_BASE_URL})`);
-    logger.info(`Course cache mode: ${courseCachePolicy.getCourseCacheMode()} (zone=${courseCachePolicy.DAY_TTL_ZONE})`);
+    logger.info(`Course cache mode: day-ttl (locked; zone=${courseCachePolicy.DAY_TTL_ZONE})`);
 
     setImmediate(() => {
       try {
