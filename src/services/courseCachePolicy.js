@@ -9,11 +9,12 @@ const SOURCE_LEGACY_RECON = 'legacy_recon';
 const DAY_TTL_ZONE = process.env.GHIN_COURSE_DAY_TTL_ZONE || 'America/New_York';
 
 function getCourseCacheMode() {
-  const raw = String(process.env.GHIN_COURSE_CACHE_MODE || CACHE_MODE_LEGACY).trim().toLowerCase();
-  if (raw === CACHE_MODE_DAY_TTL || raw === 'day_ttl' || raw === 'dayttl') {
-    return CACHE_MODE_DAY_TTL;
+  // Unset/empty must be day-ttl for USGA day-cache. Legacy only when env explicitly sets legacy.
+  const raw = String(process.env.GHIN_COURSE_CACHE_MODE || '').trim().toLowerCase();
+  if (raw === CACHE_MODE_LEGACY || raw === 'legacy') {
+    return CACHE_MODE_LEGACY;
   }
-  return CACHE_MODE_LEGACY;
+  return CACHE_MODE_DAY_TTL;
 }
 
 function isDayTtlMode() {

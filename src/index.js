@@ -176,6 +176,7 @@ const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
 const { startRatingsExpiryScheduler } = safeRequire('./services/ratingsExpiryScheduler');
+const courseCachePolicy = safeRequire('./services/courseCachePolicy');
 const { getRuntimeInfo } = safeRequire('./utils/runtimeInfo');
 
 async function initializeSecrets() {
@@ -464,6 +465,7 @@ async function bootstrap() {
     });
     logger.info(`✅ GHIN Middleware API listening on port ${PORT}`);
     logger.info(`🌐 GHIN environment: ${getGhinEnvironmentLabel()} (${process.env.GHIN_API_BASE_URL})`);
+    logger.info(`Course cache mode: ${courseCachePolicy.getCourseCacheMode()} (zone=${courseCachePolicy.DAY_TTL_ZONE})`);
 
     setImmediate(() => {
       try {

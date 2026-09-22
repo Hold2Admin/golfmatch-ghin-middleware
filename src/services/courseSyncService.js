@@ -1792,10 +1792,7 @@ async function upsertCacheDbRatingsOnly(course, options = {}) {
 
   const now = options.now instanceof Date ? options.now : new Date();
   const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
-  const cacheSource = courseCachePolicy.resolveCacheSource(
-    options.cacheSource || courseCachePolicy.SOURCE_USGA_FETCH,
-    options
-  );
+  const cacheSource = courseCachePolicy.resolveCacheSource(options.cacheSource, options);
 
   await database.query(
     `UPDATE dbo.GHIN_Courses
