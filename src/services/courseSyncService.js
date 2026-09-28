@@ -256,10 +256,13 @@ function buildTeeStructurePayload(payload) {
 
 function buildCacheUpsertPayload(courses, options = {}) {
   const now = options.now instanceof Date ? options.now : new Date();
-  const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
-
-
   const cacheSource = courseCachePolicy.resolveCacheSource(options.cacheSource, options);
+  const isManualSource = String(cacheSource || '').trim().toUpperCase() === 'MANUAL';
+  // Manual courses are not USGA day-ttl ratings; keep ExpiresAt far future so the
+  // nightly ratings-expiry NULL job never clears their CR/Slope.
+  const expiry = isManualSource
+    ? (options.expiry instanceof Date ? options.expiry : new Date('9999-12-31T23:59:59.999Z'))
+    : courseCachePolicy.computeCacheExpiresAt(now, options);
 
   const courseRows = [];
   const teeRows = [];
@@ -1920,6 +1923,30 @@ async function getOrFetchCourse(courseId, options = {}) {
   const hasPublic = Boolean(freshness.exists);
   const hasRatings = hasPublic ? await courseHasCachedRatings(id) : false;
   const ratingsFresh = hasPublic && freshness.fresh && hasRatings;
+  const isManualCourse = String(id).toUpperCase().startsWith('MANUAL-')
+    || String(freshness.row?.cacheSource || '').trim().toUpperCase() === 'MANUAL';
+
+  // Manual/non-USGA courses cannot be re-fetched from GHIN; serve cache only.
+  if (isManualCourse) {
+    const cached = await buildMirrorPayloadFromCache(id);
+    if (cached) {
+      return {
+        course: cached,
+        source: 'cache',
+        ratingsFresh: hasRatings,
+        ratingsOnly: false,
+        cacheMode: courseCachePolicy.getCourseCacheMode(),
+        manual: true
+      };
+    }
+    return {
+      course: null,
+      source: 'cache',
+      notFound: true,
+      cacheMode: courseCachePolicy.getCourseCacheMode(),
+      manual: true
+    };
+  }
 
   if (!forceRefresh && ratingsFresh) {
     const cached = await buildMirrorPayloadFromCache(id);
@@ -2157,6 +2184,10 @@ async function reconcileOrphanGolfDbRatings(options = {}) {
 
   for (const courseId of courseIds) {
     const freshness = await getCachedCourseFreshness(courseId);
+    const cacheSource = String(freshness.row?.cacheSource || '').trim().toUpperCase();
+    if (cacheSource === 'MANUAL' || String(courseId).toUpperCase().startsWith('MANUAL-')) {
+      continue;
+    }
     const hasRatings = freshness.exists ? await courseHasCachedRatings(courseId) : false;
     const expiresAt = freshness.row?.expiresAt ? new Date(freshness.row.expiresAt) : null;
     const cacheExpired = !freshness.exists || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime();
@@ -2234,6 +2265,7 @@ async function purgeExpiredCacheCourses(options = {}) {
     `SELECT TOP (@limit) c.CourseId AS courseId
      FROM dbo.GHIN_Courses c
      WHERE c.ExpiresAt <= @now
+       AND UPPER(LTRIM(RTRIM(ISNULL(c.CacheSource, '')))) <> 'MANUAL'
        AND EXISTS (
          SELECT 1
          FROM dbo.GHIN_Tees t
