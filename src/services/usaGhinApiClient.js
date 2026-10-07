@@ -351,12 +351,14 @@ async function requestWithBase(method, path, params = {}, baseUrlOverride = null
 async function getGolfer(ghinNumber) {
   const data = await request('GET', '/golfers/search.json', {
     page: 1,
-    per_page: 1,
+    per_page: 25,
     golfer_id: ghinNumber,
   });
+  // USGA returns one row per club membership; use the active one, not whichever row comes first.
   const golfers = data.golfers ?? [];
   if (!golfers.length) return null;
-  return _normalizeGolfer(golfers[0]);
+  const activeGolfer = golfers.find((g) => String(g.status ?? '').trim().toLowerCase() === 'active');
+  return _normalizeGolfer(activeGolfer ?? golfers[0]);
 }
 
 /**
