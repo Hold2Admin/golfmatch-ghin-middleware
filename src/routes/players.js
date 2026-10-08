@@ -8,8 +8,14 @@ const { body, param, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinPlayer } = require('../services/transformers/playerTransformer');
+const config = require('../config');
+const { createConcurrencyLimiter } = require('../utils/concurrencyLimiter');
 
 const logger = createLogger('players');
+
+// Shared across all in-flight /batch requests so parallel batches can't fan out unbounded.
+// Course and single-player calls do not go through this limiter.
+const limitBatchPlayerLookup = createConcurrencyLimiter(config.ghin.maxConcurrentPlayerLookups);
 
 const ghinNumberValidator = (field) => field
   .isString()
@@ -114,7 +120,7 @@ router.post(
       });
 
       const results = await Promise.allSettled(
-        ghinNumbers.map(ghinNumber => ghinClient.getPlayer(ghinNumber, { suppressSuccessLog: true }))
+        ghinNumbers.map(ghinNumber => limitBatchPlayerLookup(() => ghinClient.getPlayer(ghinNumber, { suppressSuccessLog: true })))
       );
 
       const players = [];

@@ -77,7 +77,7 @@ module.exports = {
     sandboxEmail: process.env.GHIN_SANDBOX_EMAIL,
     sandboxPassword: process.env.GHIN_SANDBOX_PASSWORD,
     timeout: parseInt(process.env.GHIN_API_TIMEOUT_MS) || 10000,
-    maxRps: parseInt(process.env.GHIN_API_MAX_RPS) || 20,
+    maxConcurrentPlayerLookups: parseInt(process.env.GHIN_PLAYER_LOOKUP_MAX_CONCURRENT) || 8,
     get useMock() {
       return shouldUseMockMode();
     }
