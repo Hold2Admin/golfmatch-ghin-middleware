@@ -314,6 +314,12 @@ async function runOnce(options = {}) {
 }
 
 function startRatingsExpiryScheduler() {
+  // The 12:05 clear writes the shared prod CacheDB, so only the Azure-hosted middleware runs it.
+  if (!process.env.WEBSITE_INSTANCE_ID) {
+    logger.info('Ratings-expiry scheduler not started; not running on Azure App Service');
+    return { enabled: false, reason: 'not_azure' };
+  }
+
   const scheduleMode = String(process.env.GHIN_RATINGS_EXPIRY_SCHEDULE_MODE || 'daily-after-midnight')
     .trim()
     .toLowerCase();
