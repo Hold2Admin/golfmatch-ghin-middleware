@@ -3,6 +3,7 @@
 // ============================================================
 
 const sql = require('mssql');
+const { SQL_POOL_MAIN } = require('../config/sqlPoolConfig');
 const config = require('../config');
 const { createLogger } = require('../utils/logger');
 
@@ -23,11 +24,7 @@ function getRuntimeDbConfig() {
     user,
     password,
     options: config.db.options,
-    pool: {
-      max: 10,
-      min: 0,
-      idleTimeoutMillis: 30000
-    }
+    pool: { ...SQL_POOL_MAIN }
   };
 }
 
