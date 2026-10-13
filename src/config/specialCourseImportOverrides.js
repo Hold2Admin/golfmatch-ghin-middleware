@@ -34,11 +34,6 @@ module.exports = {
     minimumValidTees: 10,
     note: 'Import Scotland Run Golf Club using the ten complete tees while GHIN repairs the malformed White/Green men tee that publishes duplicate hole rows.'
   },
-  '1357': {
-    strategy: 'drop-invalid-tees',
-    minimumValidTees: 6,
-    note: 'Import The Pines At Clermont using the six complete 9-hole tees while GHIN repairs the broken 18-hole companion tees missing back-nine handicap allocations.'
-  },
   '3079': {
     strategy: 'drop-invalid-tees',
     minimumValidTees: 3,
