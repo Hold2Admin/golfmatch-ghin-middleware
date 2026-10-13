@@ -1,6 +1,7 @@
 const database = require('./database');
 const { createLogger } = require('../utils/logger');
 const usaGhinApiClient = require('./usaGhinApiClient');
+const { prepareCourseForImport } = require('./courseImportPreparation');
 const crypto = require('crypto');
 const {
   recordReceived,
@@ -1348,9 +1349,12 @@ async function processCourseSync(course, options = {}) {
     totalDurationMs: 0
   };
 
+  let specialImport = null;
+
   function finalizeResult(result) {
     return {
       ...result,
+      ...(specialImport ? { partial: Boolean(specialImport.prunedTeeCount), specialImport } : {}),
       timings: {
         ...timings,
         totalDurationMs: Date.now() - startedAtMs
@@ -1362,7 +1366,12 @@ async function processCourseSync(course, options = {}) {
 
   try {
     const validationStartedAtMs = Date.now();
-    validateCourseForSync(course);
+    // Tee-level preparation (hand-reviewed overrides, duplicate-hole fix, and
+    // dropping only invalid tees) shared with the backfill script. Throws only
+    // when no complete tee is left.
+    const prepared = await prepareCourseForImport(course, validateCourseForSync, { client: usaGhinApiClient });
+    course = prepared.course;
+    specialImport = prepared.specialImport || null;
     timings.validationDurationMs = Date.now() - validationStartedAtMs;
 
     const incomingPayload = buildMirrorPayload(course);
