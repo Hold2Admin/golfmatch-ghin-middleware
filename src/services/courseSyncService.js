@@ -466,7 +466,7 @@ async function hasExistingCacheChildren(tx, payload) {
     .query(`
       SELECT TOP 1 1 AS hasExisting
       FROM dbo.GHIN_Tees t
-      WHERE t.CourseId IN (SELECT [value] FROM OPENJSON(@courseIdsJson));
+      WHERE t.CourseId IN (SELECT j.CourseId FROM OPENJSON(@courseIdsJson) WITH (CourseId VARCHAR(50) '$') j);
     `);
 
   return result.recordset.length > 0;
