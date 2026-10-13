@@ -9,6 +9,7 @@
  */
 
 const { loadSecrets } = require('../src/config/secrets');
+const database = require('../src/services/database');
 
 async function run() {
   const courseIds = process.argv.slice(2).map((id) => String(id).trim()).filter(Boolean);
@@ -25,9 +26,15 @@ async function run() {
     });
 
   console.log(JSON.stringify(summary, null, 2));
+  await database.close();
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
+  try {
+    await database.close();
+  } catch (_) {
+    // Ignore shutdown errors.
+  }
   console.error('Reconciliation failed:', error.message);
   process.exit(1);
 });
