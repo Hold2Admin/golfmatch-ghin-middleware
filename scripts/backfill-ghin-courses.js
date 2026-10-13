@@ -974,6 +974,13 @@ async function discoverStateCourseIds(client, state, pageSize) {
       newIds += 1;
     }
 
+    // USGA's state search ignores page/per_page and returns the full state list in one
+    // response. More rows than requested on page 1 means we already have everything.
+    if (page === 1 && results.length > pageSize) {
+      stopReason = 'full-list';
+      break;
+    }
+
     if (newIds === 0) {
       stopReason = 'no-new-ids';
       break;
