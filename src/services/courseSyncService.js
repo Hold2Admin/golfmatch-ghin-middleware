@@ -915,6 +915,12 @@ function validateCourseMirrorShape(course) {
       throw new Error(`Course ${courseId} tees[${teeIndex}] missing holes[]`);
     }
 
+    // A playable tee has exactly 9 or 18 holes (Hold2, 2026-10-13). Partial
+    // tees are dropped by the tee-level import prep and reported as partial.
+    if (holes.length !== 9 && holes.length !== 18) {
+      throw new Error(`Course ${courseId} tees[${teeIndex}] has ${holes.length} holes; expected 9 or 18`);
+    }
+
     holes.forEach((hole, holeIndex) => {
       const holeNumber = Number(hole?.holeNumber);
       const par = Number(hole?.par);
