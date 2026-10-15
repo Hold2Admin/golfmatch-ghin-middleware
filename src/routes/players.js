@@ -10,6 +10,7 @@ const ghinClient = require('../services/ghinClient');
 const { transformGhinPlayer } = require('../services/transformers/playerTransformer');
 const config = require('../config');
 const { createConcurrencyLimiter } = require('../utils/concurrencyLimiter');
+const { resolveHandicapIndexAsOf } = require('../services/handicapIndexAsOfService');
 
 const logger = createLogger('players');
 
@@ -159,6 +160,79 @@ router.post(
         error: {
           code: 'BATCH_FETCH_ERROR',
           message: 'Failed to fetch players',
+          retryable: true
+        }
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/v1/players/handicap-index-as-of/batch
+ * Resolve each golfer's Handicap Index in effect on asOfDate (YYYY-MM-DD) in a single request
+ */
+router.post(
+  '/handicap-index-as-of/batch',
+  [
+    body('ghinNumbers')
+      .isArray({ min: 1, max: 50 })
+      .withMessage('Must provide 1-50 GHIN numbers'),
+    ghinNumberValidator(body('ghinNumbers.*'))
+      .withMessage('Each GHIN number must be 1-10 digits'),
+    body('asOfDate')
+      .isString()
+      .trim()
+      .matches(/^\d{4}-\d{2}-\d{2}$/)
+      .withMessage('asOfDate must be YYYY-MM-DD')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Invalid request body',
+          details: errors.array()
+        }
+      });
+    }
+
+    const { ghinNumbers, asOfDate } = req.body;
+    const startedAt = Date.now();
+
+    try {
+      logger.info('Batch handicap index as-of lookup requested', {
+        correlationId: req.correlationId,
+        requested: ghinNumbers.length,
+        asOfDate,
+      });
+
+      const settled = await Promise.allSettled(
+        ghinNumbers.map(ghinNumber => limitBatchPlayerLookup(() => resolveHandicapIndexAsOf(ghinNumber, asOfDate)))
+      );
+
+      const results = settled.map((result, index) => (
+        result.status === 'fulfilled'
+          ? result.value
+          : { ghinNumber: ghinNumbers[index], error: result.reason?.message }
+      ));
+
+      logger.info('Batch handicap index as-of lookup completed', {
+        correlationId: req.correlationId,
+        requested: ghinNumbers.length,
+        resolved: results.filter(result => !result.error).length,
+        errors: results.filter(result => result.error).length,
+        asOfDate,
+        duration: `${Date.now() - startedAt}ms`,
+      });
+
+      res.json({ results });
+    } catch (error) {
+      logger.error('Batch handicap index as-of error', { error: error.message });
+      res.status(500).json({
+        error: {
+          code: 'BATCH_FETCH_ERROR',
+          message: 'Failed to resolve handicap indexes',
           retryable: true
         }
       });
