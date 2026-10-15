@@ -666,8 +666,10 @@ async function searchScores(params = {}) {
   };
 
   if (params.golfer_id) query.golfer_id = params.golfer_id;
-  if (params.played_at_from) query.played_at_from = params.played_at_from;
-  if (params.played_at_to) query.played_at_to = params.played_at_to;
+  // USGA score search filters by play date with from_date_played / to_date_played (day-exact);
+  // it ignores played_at_from / played_at_to, so map our route params onto USGA's names.
+  if (params.played_at_from) query.from_date_played = params.played_at_from;
+  if (params.played_at_to) query.to_date_played = params.played_at_to;
   if (params.mode) query.mode = params.mode;
 
   return request('GET', '/scores/search.json', query);
