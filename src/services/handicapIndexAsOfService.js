@@ -1,16 +1,20 @@
 // ============================================================
 // Handicap Index as of a date
-// Under WHS an index only revises when a score posts, so the index at play on the golfer's
-// latest posted round on or before the date is the index in effect on that date.
+// Under WHS an index only revises after a score posts, and each round records the index the
+// golfer played it at (the index in effect that day). So the index in effect on a date is:
+//   - the index at play on the golfer's first round played on or after that date, or
+//   - the golfer's current index when no round has been played since that date.
+// The index at play on the last round BEFORE the date is wrong: that round's own revision
+// had not been applied yet when it was played.
 // ============================================================
 
 // scorePostingService.searchScores unwraps USGA's raw payload into a flat scores array;
 // the raw client response does not carry scores at the top level.
 const scorePostingService = require('./scorePostingService');
+const usaGhinApiClient = require('./usaGhinApiClient');
 
 const SCORE_PAGE_SIZE = 100;
 const SCORE_PAGE_LIMIT = 50;
-const HISTORY_START_DATE = '2000-01-01';
 
 function hasIndex(score) {
   return score?.handicap_index != null && String(score.handicap_index).trim() !== '';
@@ -19,6 +23,10 @@ function hasIndex(score) {
 function toHandicapIndex(score) {
   const display = String(score.handicap_index_display ?? '').trim();
   return display.startsWith('+') ? display : score.handicap_index;
+}
+
+function todayEtDateString() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
 }
 
 // All rounds with an index played in [from, to]; USGA filters by play date, day-exact.
@@ -39,37 +47,33 @@ async function searchRoundsInWindow(ghinNumber, from, to) {
   return rows;
 }
 
+function scoreOrder(score) {
+  const order = Number(score?.order_number);
+  return Number.isFinite(order) ? order : Number.POSITIVE_INFINITY;
+}
+
 /**
  * Resolve one golfer's Handicap Index in effect on asOfDate (YYYY-MM-DD).
- * USGA reports played_at to the month, so find the latest month, then narrow to the exact
- * latest play day inside it with day-exact date filters (binary search, about 5 lookups).
  * @returns {Promise<{ghinNumber, handicapIndex} | {ghinNumber, error}>}
  */
 async function resolveHandicapIndexAsOf(ghinNumber, asOfDate) {
-  const rounds = await searchRoundsInWindow(ghinNumber, HISTORY_START_DATE, asOfDate);
-  if (!rounds.length) return { ghinNumber, error: 'No posted round on or before that date' };
+  const today = todayEtDateString();
+  const [laterRounds, golfer] = await Promise.all([
+    asOfDate <= today ? searchRoundsInWindow(ghinNumber, asOfDate, today) : Promise.resolve([]),
+    usaGhinApiClient.getGolfer(ghinNumber)
+  ]);
 
-  const latestMonth = rounds
-    .map((round) => String(round.played_at ?? '').slice(0, 7))
-    .filter((month) => /^\d{4}-\d{2}$/.test(month))
-    .sort()
-    .pop();
-  if (!latestMonth) return { ghinNumber, error: 'USGA returned rounds without a played date' };
-
-  const [year, month] = latestMonth.split('-').map(Number);
-  const monthEndDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const dayString = (day) => `${latestMonth}-${String(day).padStart(2, '0')}`;
-  let lo = 1;
-  let hi = asOfDate.slice(0, 7) === latestMonth ? Number(asOfDate.slice(8, 10)) : monthEndDay;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if ((await searchRoundsInWindow(ghinNumber, dayString(mid), dayString(hi))).length) lo = mid;
-    else hi = mid - 1;
+  if (laterRounds.length) {
+    const firstRound = laterRounds.slice().sort((a, b) => scoreOrder(a) - scoreOrder(b))[0];
+    return { ghinNumber, handicapIndex: toHandicapIndex(firstRound) };
   }
 
-  const dayRounds = await searchRoundsInWindow(ghinNumber, dayString(lo), dayString(lo));
-  if (!dayRounds.length) return { ghinNumber, error: 'Could not resolve the exact play date from USGA' };
-  return { ghinNumber, handicapIndex: toHandicapIndex(dayRounds[0]) };
+  // No round played since the date, so no revision since: the current index is the one in effect.
+  const current = golfer?.handicapIndexDisplay ?? golfer?.handicapIndex ?? null;
+  if (current == null || String(current).trim() === '') {
+    return { ghinNumber, error: 'USGA returned no Handicap Index' };
+  }
+  return { ghinNumber, handicapIndex: String(current).trim() };
 }
 
 module.exports = {

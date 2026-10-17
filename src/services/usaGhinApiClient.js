@@ -113,6 +113,11 @@ const ALLOWLIST = [
   { method: 'GET',  pattern: /^\/golfers\/\d+\.json$/ },
   { method: 'GET',  pattern: /^\/golfers\/\d+\/privacy_settings\.json$/ },
   { method: 'GET',  pattern: /^\/golfers\/\d+\/scores\.json$/ },
+  { method: 'GET',  pattern: /^\/golfers\/\d+\/handicap_history\.json$/ },
+  { method: 'GET',  pattern: /^\/golfers\/\d+\/handicap_history_by_date\.json$/ },
+  { method: 'GET',  pattern: /^\/golfers\/\d+\/handicap_history_last_year\.json$/ },
+  { method: 'GET',  pattern: /^\/golfers\/\d+\/revision_scores\.json$/ },
+  { method: 'GET',  pattern: /^\/clubs\/\d+\/hi_roster\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/search\.json$/ },
   { method: 'GET',  pattern: /^\/courses\/\d+\.json$/ },
   { method: 'GET',  pattern: /^\/Courses\/[^/]+\/TeeSetRatingsForScorePosting\.json$/ },
@@ -710,6 +715,51 @@ async function getGolferScores(golferId, params = {}) {
 }
 
 
+/**
+ * USGA Handicap Index revision history for a golfer (raw USGA payload).
+ */
+async function getGolferHandicapHistory(golferId, params = {}) {
+  const id = String(golferId || '').trim();
+  if (!/^\d{1,10}$/.test(id)) {
+    throw Object.assign(new Error('golferId must be 1-10 digits'), { status: 400, code: 'INVALID_GOLFER_ID' });
+  }
+  return request('GET', `/golfers/${encodeURIComponent(id)}/handicap_history.json`, params);
+}
+
+/**
+ * USGA Handicap Index revisions for a golfer over a period (raw USGA payload).
+ */
+async function getGolferHandicapHistoryByDate(golferId, params = {}) {
+  const id = String(golferId || '').trim();
+  if (!/^\d{1,10}$/.test(id)) {
+    throw Object.assign(new Error('golferId must be 1-10 digits'), { status: 400, code: 'INVALID_GOLFER_ID' });
+  }
+  return request('GET', `/golfers/${encodeURIComponent(id)}/handicap_history_by_date.json`, params);
+}
+
+/**
+ * USGA Handicap Index revisions for a golfer over the last year (raw USGA payload).
+ */
+async function getGolferHandicapHistoryLastYear(golferId, params = {}) {
+  const id = String(golferId || '').trim();
+  if (!/^\d{1,10}$/.test(id)) {
+    throw Object.assign(new Error('golferId must be 1-10 digits'), { status: 400, code: 'INVALID_GOLFER_ID' });
+  }
+  return request('GET', `/golfers/${encodeURIComponent(id)}/handicap_history_last_year.json`, params);
+}
+
+/**
+ * Every golfer in a club with their Handicap Index revision as of a date (raw USGA payload).
+ */
+async function getClubHandicapIndexRosterAsOf(clubId, asOfDate, params = {}) {
+  const id = String(clubId || '').trim();
+  if (!/^\d{1,10}$/.test(id)) {
+    throw Object.assign(new Error('clubId must be 1-10 digits'), { status: 400, code: 'INVALID_CLUB_ID' });
+  }
+  return request('GET', `/clubs/${encodeURIComponent(id)}/hi_roster.json`, { as_of_date: asOfDate, page: 1, per_page: 100, ...params });
+}
+
+
 function _normalizeSupportingTeeSetSide(value) {
   const normalized = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
   if (normalized === 'F9') return 'F9';
@@ -1166,6 +1216,10 @@ module.exports = {
   getScore,
   getGolferPrivacySettings,
   getGolferScores,
+  getGolferHandicapHistory,
+  getGolferHandicapHistoryByDate,
+  getGolferHandicapHistoryLastYear,
+  getClubHandicapIndexRosterAsOf,
   getCourseHandicaps,
   getManualCourseHandicap,
   getPlayingHandicaps,
