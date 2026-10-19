@@ -1,5 +1,6 @@
 const database = require('./database');
 const { createLogger } = require('../utils/logger');
+const { trackDependency } = require('../utils/appinsights');
 const usaGhinApiClient = require('./usaGhinApiClient');
 const { prepareCourseForImport } = require('./courseImportPreparation');
 const crypto = require('crypto');
@@ -140,11 +141,38 @@ function acquireMirrorCallbackSlot() {
 }
 
 async function runWithMirrorCallbackSlot(fn) {
+  const waitStarted = Date.now();
   const release = await acquireMirrorCallbackSlot();
+  const slotWaitMs = Date.now() - waitStarted;
+  const callStarted = Date.now();
+  let response;
+  let error;
   try {
-    return await fn();
+    response = await fn();
+    return response;
+  } catch (err) {
+    error = err;
+    throw err;
   } finally {
     release();
+    const callMs = Date.now() - callStarted;
+    let host = 'golfdb-callback';
+    let path = 'mirror-callback';
+    try {
+      const u = new URL(response?.url || process.env.GHIN_IMPORT_CALLBACK_URL || '');
+      host = u.host;
+      path = u.pathname;
+    } catch (_) { /* keep defaults */ }
+    const ok = !error && Boolean(response?.ok);
+    trackDependency(host, `POST ${path}`, callMs, ok, error ? 0 : (response?.status || 0), {
+      type: 'HTTP',
+      properties: { slotWaitMs: String(slotWaitMs), inFlightAfter: String(mirrorCallbacksInFlight) }
+    });
+    if (!ok || callMs + slotWaitMs >= 2000) {
+      logger[ok ? 'warn' : 'error'](ok ? 'Slow GolfDB mirror callback' : 'GolfDB mirror callback failed', {
+        path, status: response?.status, callMs, slotWaitMs, error: error?.message
+      });
+    }
   }
 }
 
@@ -1921,29 +1949,85 @@ async function mirrorRatingsOnlyToGolfDb(course) {
  * Missing public catalog or webhook/fullSync: full processCourseSync.
  * Legacy mode: still returns cache if present (even if ExpiresAt far future).
  */
+const COURSE_LOAD_LOG_MS = Number(process.env.COURSE_LOAD_LOG_MS || 1000);
+
+// Times each step of a course load and reports one line per load: which path it took
+// (cache, USGA ratings-only, USGA full, joined another caller's fetch) and where the time went.
 async function getOrFetchCourse(courseId, options = {}) {
+  const started = Date.now();
+  const timing = { steps: {}, path: 'unknown' };
+  timing.step = async (name, fn) => {
+    const s = Date.now();
+    try {
+      return await fn();
+    } finally {
+      timing.steps[name] = (timing.steps[name] || 0) + (Date.now() - s);
+    }
+  };
+  let result;
+  let error;
+  try {
+    result = await getOrFetchCourseTimed(courseId, options, timing);
+    return result;
+  } catch (err) {
+    error = err;
+    throw err;
+  } finally {
+    const totalMs = Date.now() - started;
+    const path = timing.path === 'unknown' && result?.source ? result.source : timing.path;
+    const details = {
+      courseId: String(courseId || ''),
+      path,
+      source: result?.source,
+      totalMs,
+      steps: timing.steps,
+      forceRefresh: Boolean(options.forceRefresh),
+      fullSync: Boolean(options.fullSync),
+      fromWebhook: Boolean(options.fromWebhook),
+      error: error?.message
+    };
+    trackDependency('course-load', `course.load ${path}`, totalMs, !error, error ? 1 : 0, {
+      type: 'InProc',
+      data: `courseId=${details.courseId}`,
+      properties: Object.fromEntries(Object.entries({
+        courseId: details.courseId, path, source: details.source,
+        steps: JSON.stringify(timing.steps), error: details.error
+      }).filter(([, v]) => v !== undefined))
+    });
+    if (error) {
+      logger.error('Course load failed', details);
+    } else if (totalMs >= COURSE_LOAD_LOG_MS) {
+      logger.warn('Slow course load', details);
+    } else {
+      logger.debug('Course load', details);
+    }
+  }
+}
+
+async function getOrFetchCourseTimed(courseId, options, timing) {
   const id = String(courseId || '').trim();
   if (!id) {
     throw new Error('courseId is required');
   }
 
-  await ensureCacheTables();
+  await timing.step('ensureCacheTables', () => ensureCacheTables());
 
   const forceRefresh = Boolean(options.forceRefresh);
   const fromWebhook = Boolean(options.fromWebhook);
   const fullSync = Boolean(options.fullSync) || fromWebhook;
   const syncMirror = options.syncMirror !== false;
 
-  const freshness = await getCachedCourseFreshness(id);
+  const freshness = await timing.step('freshness', () => getCachedCourseFreshness(id));
   const hasPublic = Boolean(freshness.exists);
-  const hasRatings = hasPublic ? await courseHasCachedRatings(id) : false;
+  const hasRatings = hasPublic ? await timing.step('hasRatings', () => courseHasCachedRatings(id)) : false;
   const ratingsFresh = hasPublic && freshness.fresh && hasRatings;
   const isManualCourse = String(id).toUpperCase().startsWith('MANUAL-')
     || String(freshness.row?.cacheSource || '').trim().toUpperCase() === 'MANUAL';
 
   // Manual/non-USGA courses cannot be re-fetched from GHIN; serve cache only.
   if (isManualCourse) {
-    const cached = await buildMirrorPayloadFromCache(id);
+    timing.path = 'manual_cache';
+    const cached = await timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id));
     if (cached) {
       return {
         course: cached,
@@ -1964,7 +2048,8 @@ async function getOrFetchCourse(courseId, options = {}) {
   }
 
   if (!forceRefresh && ratingsFresh) {
-    const cached = await buildMirrorPayloadFromCache(id);
+    timing.path = 'cache';
+    const cached = await timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id));
     if (cached) {
       return {
         course: cached,
@@ -1975,15 +2060,17 @@ async function getOrFetchCourse(courseId, options = {}) {
       };
     }
   } else if (forceRefresh && courseCachePolicy.isDayTtlMode() && fullSync) {
-    await markCourseCacheInvalidated(id);
+    await timing.step('invalidate', () => markCourseCacheInvalidated(id));
   }
 
   if (courseFetchInFlight.has(id)) {
-    return courseFetchInFlight.get(id);
+    timing.path = 'joined_inflight_fetch';
+    return timing.step('waitInflightFetch', () => courseFetchInFlight.get(id));
   }
 
   const promise = (async () => {
-    const course = await usaGhinApiClient.getCourse(id);
+    timing.path = 'usga';
+    const course = await timing.step('usgaGetCourse', () => usaGhinApiClient.getCourse(id));
     if (!course) {
       return {
         course: null,
@@ -2006,11 +2093,12 @@ async function getOrFetchCourse(courseId, options = {}) {
       && !fullSync;
 
     if (useRatingsOnly) {
-      await upsertCacheDbRatingsOnly(course, syncOptions);
+      timing.path = 'usga_ratings_only';
+      await timing.step('upsertRatingsOnly', () => upsertCacheDbRatingsOnly(course, syncOptions));
       if (syncMirror) {
-        await mirrorRatingsOnlyToGolfDb(course);
+        await timing.step('mirrorRatingsOnly', () => mirrorRatingsOnlyToGolfDb(course));
       }
-      const cached = await buildMirrorPayloadFromCache(id);
+      const cached = await timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id));
       return {
         course: cached || course,
         source: options.fromWebhook ? 'webhook_refetch' : 'usga_ratings',
@@ -2020,7 +2108,8 @@ async function getOrFetchCourse(courseId, options = {}) {
       };
     }
 
-    await processCourseSync(course, syncOptions);
+    timing.path = 'usga_full_sync';
+    await timing.step('processCourseSync', () => processCourseSync(course, syncOptions));
     return {
       course,
       source: fromWebhook ? 'webhook_refetch' : 'usga_fetch',

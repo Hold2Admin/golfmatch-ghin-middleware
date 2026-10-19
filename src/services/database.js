@@ -8,6 +8,106 @@ const config = require('../config');
 const { createLogger } = require('../utils/logger');
 
 const logger = createLogger('database');
+const { trackDependency } = require('../utils/appinsights');
+
+const SLOW_SQL_LOG_MS = Number(process.env.SLOW_SQL_LOG_MS || 1000);
+const SLOW_ACQUIRE_LOG_MS = Number(process.env.SLOW_SQL_ACQUIRE_LOG_MS || 250);
+
+function poolStats() {
+  const p = pool && pool.pool;
+  if (!p || typeof p.numUsed !== 'function') return {};
+  return {
+    used: p.numUsed(),
+    free: p.numFree(),
+    pendingAcquires: p.numPendingAcquires(),
+    pendingCreates: p.numPendingCreates()
+  };
+}
+
+function sqlLabel(text) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  const verb = (flat.match(/^(?:WITH\b.*?\)\s*)?(\w+)/i) || [])[1] || 'SQL';
+  const table = (flat.match(/\b(?:FROM|INTO|UPDATE|MERGE(?:\s+INTO)?|JOIN|TABLE)\s+([\w.\[\]#]+)/i) || [])[1] || '';
+  return `${verb.toUpperCase()} ${table}`.trim();
+}
+
+let mssqlInstrumented = false;
+// Every mssql Request (pool, transaction, prepared) reports as a SQL dependency on the
+// current request, and anything slow is logged with the pool state around it.
+function instrumentMssql() {
+  if (mssqlInstrumented) return;
+  mssqlInstrumented = true;
+  for (const method of ['query', 'batch', 'execute']) {
+    const original = sql.Request.prototype[method];
+    if (typeof original !== 'function') continue;
+    sql.Request.prototype[method] = function instrumented(command, ...rest) {
+      if (typeof rest[rest.length - 1] === 'function') {
+        return original.call(this, command, ...rest);
+      }
+      const started = Date.now();
+      const before = poolStats();
+      const name = method === 'execute' ? `EXEC ${command}` : sqlLabel(command);
+      const target = `${process.env.GHIN_CACHE_DB_SERVER || config.db.server || 'sql'} | ${process.env.GHIN_CACHE_DB_NAME || config.db.database || ''}`;
+      const finish = (ok, error) => {
+        const durationMs = Date.now() - started;
+        const after = poolStats();
+        trackDependency(target, name, durationMs, ok, ok ? 0 : (error && (error.number || error.code)) || 1, {
+          type: 'SQL',
+          data: String(command || '').replace(/\s+/g, ' ').slice(0, 1000),
+          properties: { poolBefore: JSON.stringify(before), poolAfter: JSON.stringify(after) }
+        });
+        if (!ok || durationMs >= SLOW_SQL_LOG_MS) {
+          logger[ok ? 'warn' : 'error'](ok ? 'Slow SQL' : 'SQL failed', {
+            name, durationMs, poolBefore: before, poolAfter: after,
+            error: error ? error.message : undefined
+          });
+        }
+      };
+      const result = original.call(this, command, ...rest);
+      if (!result || typeof result.then !== 'function') return result;
+      return result.then((value) => { finish(true); return value; }, (error) => { finish(false, error); throw error; });
+    };
+  }
+}
+instrumentMssql();
+
+// Connection lifecycle from the underlying pool: opens, failures, closes, and slow waits
+// for a free connection. This is what shows a dead/cold pool reconnecting.
+function attachPoolDiagnostics(connectedPool) {
+  const tarn = connectedPool && connectedPool.pool;
+  if (!tarn || typeof tarn.on !== 'function' || tarn.__fpDiagnostics) return;
+  tarn.__fpDiagnostics = true;
+  const createStarts = new Map();
+  const acquireStarts = new Map();
+  tarn.on('createRequest', (eventId) => createStarts.set(eventId, Date.now()));
+  tarn.on('createSuccess', (eventId) => {
+    const ms = Date.now() - (createStarts.get(eventId) || Date.now());
+    createStarts.delete(eventId);
+    logger.info('SQL connection opened', { durationMs: ms, pool: poolStats() });
+  });
+  tarn.on('createFail', (eventId, error) => {
+    const ms = Date.now() - (createStarts.get(eventId) || Date.now());
+    createStarts.delete(eventId);
+    logger.error('SQL connection open failed', { durationMs: ms, error: error && error.message, pool: poolStats() });
+  });
+  tarn.on('destroySuccess', () => logger.info('SQL connection closed', { pool: poolStats() }));
+  tarn.on('acquireRequest', (eventId) => acquireStarts.set(eventId, Date.now()));
+  tarn.on('acquireSuccess', (eventId) => {
+    const ms = Date.now() - (acquireStarts.get(eventId) || Date.now());
+    acquireStarts.delete(eventId);
+    if (ms >= SLOW_ACQUIRE_LOG_MS) {
+      logger.warn('Slow SQL connection acquire', { durationMs: ms, pool: poolStats() });
+    }
+  });
+  tarn.on('acquireFail', (eventId, error) => {
+    const ms = Date.now() - (acquireStarts.get(eventId) || Date.now());
+    acquireStarts.delete(eventId);
+    logger.error('SQL connection acquire failed', { durationMs: ms, error: error && error.message, pool: poolStats() });
+  });
+  connectedPool.on('error', (error) => {
+    logger.error('SQL pool error', { error: error && error.message, pool: poolStats() });
+  });
+}
 let pool = null;
 let isConnected = false;
 let hasLoggedMissingConfig = false;
@@ -70,13 +170,18 @@ async function connect() {
       return null;
     }
 
+    const connectStarted = Date.now();
     pool = await sql.connect(dbConfig);
     isConnected = true;
     hasLoggedMissingConfig = false;
-    logger.debug(`Database connected: ${dbConfig.server}/${dbConfig.database}`);
+    attachPoolDiagnostics(pool);
+    logger.info('Database pool connected', {
+      server: dbConfig.server, database: dbConfig.database,
+      durationMs: Date.now() - connectStarted, pool: poolStats()
+    });
     return pool;
   } catch (error) {
-    logger.error('Database connection failed', { error: error.message });
+    logger.error('Database connection failed', { error: error.message, code: error.code });
     isConnected = false;
     throw error;
   }

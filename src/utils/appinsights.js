@@ -131,8 +131,9 @@ function trackEvent(eventName, properties = {}, measurements = {}) {
  * @param {number} duration
  * @param {boolean} success
  * @param {number} resultCode
+ * @param {{type?: string, data?: string, properties?: Object}} [extra]
  */
-function trackDependency(name, commandName, duration, success, resultCode) {
+function trackDependency(name, commandName, duration, success, resultCode, extra = {}) {
   const client = appInsightsModule?.defaultClient;
   if (!client) return;
 
@@ -140,11 +141,12 @@ function trackDependency(name, commandName, duration, success, resultCode) {
     client.trackDependency({
       target: name,
       name: commandName,
-      data: commandName,
+      data: extra.data || commandName,
       duration,
       success,
       resultCode,
-      dependencyTypeName: 'HTTP'
+      dependencyTypeName: extra.type || 'HTTP',
+      properties: extra.properties || undefined
     });
   } catch (error) {
     logger.error('Failed to track dependency', { error: error.message });

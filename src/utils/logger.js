@@ -14,6 +14,36 @@ const logFormat = winston.format.combine(
   winston.format.json()
 );
 
+// Winston is loaded before applicationinsights.setup(), so the SDK's auto-capture never
+// patches it and no middleware log line reached App Insights. Forward explicitly.
+const AI_SEVERITY = { error: 3, warn: 2, info: 1, http: 0, verbose: 0, debug: 0, silly: 0 };
+class AppInsightsTraceTransport extends winston.Transport {
+  log(info, callback) {
+    try {
+      const client = require.cache[require.resolve('applicationinsights')]
+        ? require('applicationinsights').defaultClient
+        : null;
+      if (client) {
+        const { level, message, timestamp, service, module: mod, stack, ...meta } = info;
+        const properties = { module: mod, service };
+        for (const [key, value] of Object.entries(meta)) {
+          if (typeof key === 'symbol') continue;
+          properties[key] = value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value);
+        }
+        if (stack) properties.stack = String(stack);
+        client.trackTrace({
+          message: `[${mod || 'app'}] ${message}`,
+          severity: AI_SEVERITY[level] ?? 1,
+          properties
+        });
+      }
+    } catch (_) {
+      // never let telemetry break logging
+    }
+    callback();
+  }
+}
+
 function createLogger(module) {
   const useColor = Boolean(process.stdout.isTTY) && process.env.NO_COLOR !== '1';
   const consoleFormats = [
@@ -60,6 +90,8 @@ function createLogger(module) {
   } catch (error) {
     console.warn(`[logger] file transports disabled: ${error.message}`);
   }
+
+  transports.push(new AppInsightsTraceTransport({ level: process.env.APPINSIGHTS_TRACE_LEVEL || 'info' }));
 
   return winston.createLogger({
     level: config.logging.level,
