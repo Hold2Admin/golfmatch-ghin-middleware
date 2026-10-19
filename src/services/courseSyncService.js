@@ -1840,50 +1840,64 @@ async function upsertCacheDbRatingsOnly(course, options = {}) {
   const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
   const cacheSource = courseCachePolicy.resolveCacheSource(options.cacheSource, options);
 
-  await database.query(
-    `UPDATE dbo.GHIN_Courses
+  // One round trip: course expiry + every tee's ratings in a single batch, in one transaction.
+  // (Previously one UPDATE per tee, run one after another: ~0.86 s for 10 tees on course 3857.)
+  const params = {
+    courseId: { type: sql.VarChar(50), value: id },
+    cachedAt: { type: sql.DateTime2, value: now },
+    expiresAt: { type: sql.DateTime2, value: expiry },
+    cacheSource: { type: sql.NVarChar(50), value: cacheSource }
+  };
+  const valueRows = [];
+  const seenTeeIds = new Set();
+  for (const tee of course.tees || []) {
+    const teeId = String(tee.teeId || '').trim();
+    if (!teeId || seenTeeIds.has(teeId)) continue;
+    seenTeeIds.add(teeId);
+    const i = valueRows.length;
+    params[`t${i}`] = { type: sql.VarChar(50), value: teeId };
+    params[`cr${i}`] = { type: sql.Decimal(4, 1), value: tee.courseRating ?? null };
+    params[`sr${i}`] = { type: sql.Int, value: tee.slope != null ? Math.round(tee.slope) : null };
+    params[`crf${i}`] = { type: sql.Decimal(4, 1), value: tee.courseRatingF9 ?? null };
+    params[`srf${i}`] = { type: sql.Int, value: tee.slopeRatingF9 != null ? Math.round(tee.slopeRatingF9) : null };
+    params[`crb${i}`] = { type: sql.Decimal(4, 1), value: tee.courseRatingB9 ?? null };
+    params[`srb${i}`] = { type: sql.Int, value: tee.slopeRatingB9 != null ? Math.round(tee.slopeRatingB9) : null };
+    valueRows.push(`(@t${i}, @cr${i}, @sr${i}, @crf${i}, @srf${i}, @crb${i}, @srb${i})`);
+  }
+
+  const teeUpdateSql = valueRows.length
+    ? `UPDATE t
+       SET CourseRating18 = v.CourseRating18,
+           SlopeRating18 = v.SlopeRating18,
+           CourseRatingF9 = v.CourseRatingF9,
+           SlopeRatingF9 = v.SlopeRatingF9,
+           CourseRatingB9 = v.CourseRatingB9,
+           SlopeRatingB9 = v.SlopeRatingB9,
+           UpdatedAt = GETUTCDATE()
+       FROM dbo.GHIN_Tees t
+       INNER JOIN (VALUES ${valueRows.join(',\n         ')})
+         AS v (TeeId, CourseRating18, SlopeRating18, CourseRatingF9, SlopeRatingF9, CourseRatingB9, SlopeRatingB9)
+         ON t.TeeId = v.TeeId
+       WHERE t.CourseId = @courseId;
+       SET @updatedTees = @@ROWCOUNT;`
+    : '';
+
+  const rows = await database.query(
+    `SET XACT_ABORT ON;
+     DECLARE @updatedTees INT = 0;
+     BEGIN TRANSACTION;
+     UPDATE dbo.GHIN_Courses
      SET CachedAt = @cachedAt,
          ExpiresAt = @expiresAt,
          CacheSource = @cacheSource,
          UpdatedAt = GETUTCDATE()
-     WHERE CourseId = @courseId`,
-    {
-      courseId: { type: sql.VarChar(50), value: id },
-      cachedAt: { type: sql.DateTime2, value: now },
-      expiresAt: { type: sql.DateTime2, value: expiry },
-      cacheSource: { type: sql.NVarChar(50), value: cacheSource }
-    }
+     WHERE CourseId = @courseId;
+     ${teeUpdateSql}
+     COMMIT TRANSACTION;
+     SELECT @updatedTees AS updatedCount;`,
+    params
   );
-
-  let updatedTees = 0;
-  for (const tee of course.tees || []) {
-    const teeId = String(tee.teeId || '').trim();
-    if (!teeId) continue;
-    const rows = await database.query(
-      `UPDATE dbo.GHIN_Tees
-       SET CourseRating18 = @courseRating18,
-           SlopeRating18 = @slopeRating18,
-           CourseRatingF9 = @courseRatingF9,
-           SlopeRatingF9 = @slopeRatingF9,
-           CourseRatingB9 = @courseRatingB9,
-           SlopeRatingB9 = @slopeRatingB9,
-           UpdatedAt = GETUTCDATE()
-       WHERE CourseId = @courseId
-         AND TeeId = @teeId;
-       SELECT @@ROWCOUNT AS updatedCount;`,
-      {
-        courseId: { type: sql.VarChar(50), value: id },
-        teeId: { type: sql.VarChar(50), value: teeId },
-        courseRating18: { type: sql.Decimal(4, 1), value: tee.courseRating ?? null },
-        slopeRating18: { type: sql.Int, value: tee.slope != null ? Math.round(tee.slope) : null },
-        courseRatingF9: { type: sql.Decimal(4, 1), value: tee.courseRatingF9 ?? null },
-        slopeRatingF9: { type: sql.Int, value: tee.slopeRatingF9 != null ? Math.round(tee.slopeRatingF9) : null },
-        courseRatingB9: { type: sql.Decimal(4, 1), value: tee.courseRatingB9 ?? null },
-        slopeRatingB9: { type: sql.Int, value: tee.slopeRatingB9 != null ? Math.round(tee.slopeRatingB9) : null }
-      }
-    );
-    updatedTees += Number(rows?.[rows.length - 1]?.updatedCount || rows?.[0]?.updatedCount || 0);
-  }
+  const updatedTees = Number(rows?.[0]?.updatedCount || 0);
 
   return { courseId: id, updatedTees, expiresAt: expiry, cacheSource };
 }
