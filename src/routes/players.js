@@ -120,9 +120,22 @@ router.post(
         forceRefresh: forceRefresh === true,
       });
 
+      // One USGA search per 25 IDs; any ID it doesn't return (or a failed bulk call) falls back
+      // to the single lookup, so the result is never worse than per-player fetching.
+      let bulkById = new Map();
+      try {
+        bulkById = await ghinClient.getPlayersBulk(ghinNumbers);
+      } catch (bulkError) {
+        logger.warn('Bulk player lookup failed; using single lookups', { correlationId: req.correlationId, error: bulkError.message });
+      }
       const results = await Promise.allSettled(
-        ghinNumbers.map(ghinNumber => limitBatchPlayerLookup(() => ghinClient.getPlayer(ghinNumber, { suppressSuccessLog: true })))
+        ghinNumbers.map((ghinNumber) => {
+          const bulkPlayer = bulkById.get(String(ghinNumber).trim());
+          if (bulkPlayer) return Promise.resolve(bulkPlayer);
+          return limitBatchPlayerLookup(() => ghinClient.getPlayer(ghinNumber, { suppressSuccessLog: true }));
+        })
       );
+      const bulkHits = ghinNumbers.filter((n) => bulkById.has(String(n).trim())).length;
 
       const players = [];
       const notFound = [];
@@ -143,6 +156,7 @@ router.post(
         correlationId: req.correlationId,
         requested: ghinNumbers.length,
         returned: players.length,
+        bulkHits,
         notFound: notFound.length,
         errors: errors.length,
         forceRefresh: forceRefresh === true,

@@ -367,6 +367,47 @@ async function getGolfer(ghinNumber) {
 }
 
 /**
+ * Fetch many golfers with as few USGA calls as possible. USGA golfers/search accepts a
+ * comma-separated golfer_id list (spec: "send all golfer IDs separated by ','"), max 100 rows
+ * per page. One golfer can return several rows (one per club membership), so IDs go in chunks
+ * of 25 and each chunk pages until a short page. Returns Map(ghinNumber -> normalized golfer),
+ * preferring the active row like getGolfer. IDs not returned are simply absent; callers fall back.
+ */
+const BULK_GOLFER_CHUNK = 25;
+const BULK_GOLFER_PER_PAGE = 100;
+const BULK_GOLFER_MAX_PAGES = 5;
+
+async function getGolfersBulk(ghinNumbers) {
+  const ids = [...new Set((ghinNumbers || []).map((n) => String(n ?? '').trim()).filter(Boolean))];
+  const rowsById = new Map();
+  for (let i = 0; i < ids.length; i += BULK_GOLFER_CHUNK) {
+    const chunk = ids.slice(i, i + BULK_GOLFER_CHUNK);
+    const wanted = new Set(chunk);
+    for (let page = 1; page <= BULK_GOLFER_MAX_PAGES; page += 1) {
+      const data = await request('GET', '/golfers/search.json', {
+        page,
+        per_page: BULK_GOLFER_PER_PAGE,
+        golfer_id: chunk.join(','),
+      });
+      const golfers = data.golfers ?? [];
+      for (const g of golfers) {
+        const id = String(g.ghin ?? g.id ?? '').trim();
+        if (!wanted.has(id)) continue;
+        if (!rowsById.has(id)) rowsById.set(id, []);
+        rowsById.get(id).push(g);
+      }
+      if (golfers.length < BULK_GOLFER_PER_PAGE) break;
+    }
+  }
+  const result = new Map();
+  rowsById.forEach((rows, id) => {
+    const active = rows.find((g) => String(g.status ?? '').trim().toLowerCase() === 'active');
+    result.set(id, _normalizeGolfer(active ?? rows[0]));
+  });
+  return result;
+}
+
+/**
  * Search golfers by GHIN number or supported name/location filters.
  * Returns array of normalized players.
  */
@@ -1206,6 +1247,7 @@ function _normalizeCourseSearchResult(c) {
 
 module.exports = {
   getGolfer,
+  getGolfersBulk,
   searchGolfers,
   getCourse,
   getCoursePostingSeason,

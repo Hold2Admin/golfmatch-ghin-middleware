@@ -35,6 +35,22 @@ async function getPlayer(ghinNumber, options = {}) {
 }
 
 /**
+ * Bulk player fetch (live: one USGA search per 25 GHIN numbers). Map(ghinNumber -> player).
+ * Mock mode resolves each player individually.
+ */
+async function getPlayersBulk(ghinNumbers) {
+  if (config.ghin.useMock) {
+    const result = new Map();
+    for (const n of ghinNumbers || []) {
+      const player = await mockData.getPlayer(n);
+      if (player) result.set(String(n), player);
+    }
+    return result;
+  }
+  return usaGhinApiClient.getGolfersBulk(ghinNumbers);
+}
+
+/**
  * Search for players
  * @param {Object} params - Search parameters
  * @returns {Promise<Array>}
@@ -437,6 +453,7 @@ async function getPlayingHandicaps(golfers = []) {
 
 module.exports = {
   getPlayer,
+  getPlayersBulk,
   searchPlayers,
   requestGolferProductAccess,
   getGolferProductAccessStatus,
