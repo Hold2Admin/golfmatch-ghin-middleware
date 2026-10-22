@@ -411,8 +411,13 @@ async function getGolfersBulk(ghinNumbers) {
  * Search golfers by GHIN number or supported name/location filters.
  * Returns array of normalized players.
  */
+// USGA returns at most 100 golfers per page (asking for more still returns 100).
+const GOLFER_SEARCH_USGA_PAGE_SIZE = 100;
+
 async function searchGolfers(params) {
-  const query = { page: 1, per_page: params.perPage ?? 20 };
+  const wanted = params.perPage ?? 20;
+  // USGA sorts by name when asked, so every page (and the first `wanted`) is already alphabetical.
+  const query = { per_page: Math.min(wanted, GOLFER_SEARCH_USGA_PAGE_SIZE), sorting_criteria: 'full_name', order: 'asc' };
   if (params.ghinNumber) query.golfer_id = params.ghinNumber;
   if (params.firstName)  query.first_name = params.firstName;
   if (params.lastName)   query.last_name  = params.lastName;
@@ -420,8 +425,15 @@ async function searchGolfers(params) {
   if (params.state)      query.state      = params.state;
   if (params.country)    query.country    = params.country;
 
-  const data = await request('GET', '/golfers/search.json', query);
-  return (data.golfers ?? []).map(_normalizeGolfer);
+  // Page through USGA until we have `wanted` golfers or a short page says there are no more.
+  const golfers = [];
+  for (let page = 1; golfers.length < wanted; page += 1) {
+    const data = await request('GET', '/golfers/search.json', { ...query, page });
+    const rows = data.golfers ?? [];
+    golfers.push(...rows);
+    if (rows.length < query.per_page) break;
+  }
+  return golfers.slice(0, wanted).map(_normalizeGolfer);
 }
 
 // ============================================================

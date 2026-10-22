@@ -267,7 +267,7 @@ router.post(
     body('email').optional().isEmail().withMessage('Valid email is required'),
     body('state').optional().isString().trim().isLength({ min: 2, max: 2 }),
     body('country').optional().isString().trim().isLength({ min: 3, max: 3 }),
-    body('perPage').optional().isInt({ min: 1, max: 100 }),
+    body('perPage').optional().isInt({ min: 1, max: 300 }),
     body('clubName').optional().isString().trim().isLength({ min: 1, max: 100 }),
     body('associationId').optional().matches(/^[A-Z]{2,4}$/)
   ],
@@ -312,7 +312,9 @@ router.post(
 
       res.json({
         results: results.map(transformGhinPlayer),
-        totalResults: results.length
+        totalResults: results.length,
+        // A full page means USGA may have more matches than were asked for.
+        truncated: results.length >= (perPage ?? 20)
       });
     } catch (error) {
       logger.error('Player search error', { error: error.message });
