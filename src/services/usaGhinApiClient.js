@@ -996,6 +996,8 @@ function _normalizeGolfer(g) {
     clubName:         g.club_name   ?? null,
     clubId:           g.club_id     != null ? String(g.club_id)         : null,
     associationId:    g.association_id != null ? String(g.association_id) : null,
+    // State of the golfer's club; USGA leaves the golfer's own address state blank for many members.
+    state:            g.primary_club_state ?? g.state ?? null,
     handicapIndex:    handicapIndex !== null ? String(handicapIndex) : null,
     handicapIndexDisplay,
     handicapFlags: {
