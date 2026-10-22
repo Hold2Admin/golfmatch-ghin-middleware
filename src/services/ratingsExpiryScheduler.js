@@ -88,14 +88,19 @@ function notifyExpiryResult(result, trigger) {
     orphanNulled > 0 ||
     orphanFailures > 0;
 
-  if (!shouldNotify) {
+  const resolvedTrigger = trigger || result.trigger || 'scheduled';
+
+  // Nightly scheduled run always reports, even when nothing needed purging.
+  // Boot catch-up runs stay quiet when nothing was purged.
+  if (!shouldNotify && resolvedTrigger !== 'scheduled') {
     return;
   }
 
   emitGrokBotEvent({
     type: 'ratings.expiry',
     meta: {
-      trigger: trigger || result.trigger || 'scheduled',
+      trigger: resolvedTrigger,
+      nothingToPurge: !shouldNotify,
       rounds: result.rounds || 0,
       nulledCourses,
       nulledTees: Number(result.nulledTees || 0),
