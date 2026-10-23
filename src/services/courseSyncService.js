@@ -2109,10 +2109,13 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
     if (useRatingsOnly) {
       timing.path = 'usga_ratings_only';
       await timing.step('upsertRatingsOnly', () => upsertCacheDbRatingsOnly(course, syncOptions));
-      if (syncMirror) {
-        await timing.step('mirrorRatingsOnly', () => mirrorRatingsOnlyToGolfDb(course));
-      }
-      const cached = await timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id));
+      // The golfdb mirror callback and the cache re-read both only need the cache write above, so they
+      // run together (they ran one after the other: about 0.3 s each on a forced refresh). A mirror
+      // failure still fails the load, as before.
+      const [, cached] = await Promise.all([
+        syncMirror ? timing.step('mirrorRatingsOnly', () => mirrorRatingsOnlyToGolfDb(course)) : null,
+        timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id))
+      ]);
       return {
         course: cached || course,
         source: options.fromWebhook ? 'webhook_refetch' : 'usga_ratings',
