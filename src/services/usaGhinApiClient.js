@@ -765,6 +765,9 @@ async function searchScores(params = {}) {
   if (params.played_at_from) query.from_date_played = params.played_at_from;
   if (params.played_at_to) query.to_date_played = params.played_at_to;
   if (params.mode) query.mode = params.mode;
+  // USGA score search filters (verified 10/25/26): score type (H, A, T, P, E) and score status.
+  if (params.score_type) query.score_type = params.score_type;
+  if (params.statuses) query.statuses = params.statuses;
 
   return request('GET', '/scores/search.json', query);
 }
