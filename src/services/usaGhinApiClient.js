@@ -359,19 +359,24 @@ async function getGolfer(ghinNumber) {
     per_page: 25,
     golfer_id: ghinNumber,
   });
-  // USGA returns one row per club membership; use the active one, not whichever row comes first.
-  const golfers = data.golfers ?? [];
-  if (!golfers.length) return null;
-  const activeGolfer = golfers.find((g) => String(g.status ?? '').trim().toLowerCase() === 'active');
-  return _normalizeGolfer(activeGolfer ?? golfers[0]);
+  // USGA returns one row per club membership and flags exactly one as the golfer's home club
+  // (checked 10/25/26 on all 465 Fore Play golfers: one home row each; 447 Active, 18 with no Active club).
+  const homeRow = _findHomeClubRow(data.golfers);
+  const isHomeRowReturned = homeRow !== undefined;
+  return isHomeRowReturned ? _normalizeGolfer(homeRow) : null;
+}
+
+// The single source for which club row describes a golfer: the row USGA flags is_home_club.
+function _findHomeClubRow(rows) {
+  return rows.find((g) => g.is_home_club === true);
 }
 
 /**
  * Fetch many golfers with as few USGA calls as possible. USGA golfers/search accepts a
  * comma-separated golfer_id list (spec: "send all golfer IDs separated by ','"), max 100 rows
  * per page. One golfer can return several rows (one per club membership), so IDs go in chunks
- * of 25 and each chunk pages until a short page. Returns Map(ghinNumber -> normalized golfer),
- * preferring the active row like getGolfer. IDs not returned are simply absent; callers fall back.
+ * of 25 and each chunk pages until a short page. Returns Map(ghinNumber -> normalized golfer)
+ * built from the home club row, like getGolfer. IDs not returned are absent (not found).
  */
 const BULK_GOLFER_CHUNK = 25;
 const BULK_GOLFER_PER_PAGE = 100;
@@ -401,8 +406,13 @@ async function getGolfersBulk(ghinNumbers) {
   }
   const result = new Map();
   rowsById.forEach((rows, id) => {
-    const active = rows.find((g) => String(g.status ?? '').trim().toLowerCase() === 'active');
-    result.set(id, _normalizeGolfer(active ?? rows[0]));
+    const homeRow = _findHomeClubRow(rows);
+    const isHomeRowReturned = homeRow !== undefined;
+    if (isHomeRowReturned) {
+      result.set(id, _normalizeGolfer(homeRow));
+    } else {
+      console.warn(`[usga] golfers/search returned no home club row for ${id}; treated as not found`);
+    }
   });
   return result;
 }
@@ -1050,6 +1060,7 @@ function _normalizeGolfer(g) {
     // This row's club state. primary_club_state is the golfer's home club, so it only describes this row's
     // club when is_home_club is true. USGA's own state field is the golfer's mailing address, not the club.
     state:            g.is_home_club ? (String(g.primary_club_state ?? '').trim() || null) : null,
+    isHomeClub:       g.is_home_club === true,
     handicapIndex:    handicapIndex !== null ? String(handicapIndex) : null,
     handicapIndexDisplay,
     handicapFlags: {

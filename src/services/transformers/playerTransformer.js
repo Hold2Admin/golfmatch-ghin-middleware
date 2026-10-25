@@ -89,6 +89,7 @@ function transformGhinPlayer(ghinPlayer) {
     clubId: ghinPlayer.clubId || null,
     associationId: ghinPlayer.associationId || null,
     state: ghinPlayer.state || null,
+    isHomeClub: ghinPlayer.isHomeClub === true,
     
     // Handicap Data
     handicapIndex,
