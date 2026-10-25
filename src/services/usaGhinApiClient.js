@@ -650,30 +650,66 @@ async function revokeGolferProductAccess(ghinNumber) {
   );
 }
 
+const GPA_ACCESS_LIST_PER_PAGE = 100;
+const GPA_ACCESS_LIST_MAX_PAGES = 20;
+
+function normalizeGpaListStatus(rawStatus) {
+  const status = String(rawStatus || '').trim().toLowerCase();
+  return ['pending', 'approved', 'inactive'].includes(status) ? status : 'inactive';
+}
+
+/**
+ * Every golfer access on Fore Play's USGA partner account.
+ * USGA ignores golfer_id on /users/accesses.json and returns the whole list,
+ * so the list is paged until a page adds no new golfers.
+ */
+async function listGolferProductAccesses() {
+  const byGolferId = new Map();
+  for (let page = 1; page <= GPA_ACCESS_LIST_MAX_PAGES; page += 1) {
+    const data = await request('GET', '/users/accesses.json', {
+      page,
+      per_page: GPA_ACCESS_LIST_PER_PAGE
+    });
+    const golfers = Array.isArray(data?.golfers) ? data.golfers : [];
+    let added = 0;
+    for (const entry of golfers) {
+      const golferId = String(entry?.golfer?.id || '').trim();
+      if (!golferId || byGolferId.has(golferId)) {
+        continue;
+      }
+      byGolferId.set(golferId, {
+        ghinNumber: golferId,
+        status: normalizeGpaListStatus(entry?.user_access?.gpa_status),
+        userAccessId: entry?.user_access?.id ? String(entry.user_access.id) : null,
+        golferName: entry?.user_access?.golfer_name || null
+      });
+      added += 1;
+    }
+    if (added === 0 || golfers.length < GPA_ACCESS_LIST_PER_PAGE) {
+      break;
+    }
+  }
+  return Array.from(byGolferId.values());
+}
+
+/**
+ * One golfer's access on the partner account. A golfer who is not on USGA's
+ * list has no access ('none'); never borrow another golfer's entry.
+ */
 async function getGolferProductAccessStatus(ghinNumber) {
   const golferId = String(ghinNumber || '').trim();
   if (!golferId) {
     throw new Error('GHIN number is required');
   }
 
-  const data = await request('GET', '/users/accesses.json', {
-    golfer_id: golferId,
-    page: 1,
-    per_page: 25
-  });
-
-  const golfers = Array.isArray(data?.golfers) ? data.golfers : [];
-  const matched = golfers.find((entry) => String(entry?.golfer?.id || '') === golferId) || golfers[0] || null;
-  const rawStatus = String(matched?.user_access?.gpa_status || '').trim().toLowerCase();
-  const normalizedStatus = ['pending', 'approved', 'inactive'].includes(rawStatus)
-    ? rawStatus
-    : 'inactive';
+  const accesses = await listGolferProductAccesses();
+  const matched = accesses.find((entry) => entry.ghinNumber === golferId) || null;
 
   return {
     ghinNumber: golferId,
-    status: normalizedStatus,
-    userAccessId: matched?.user_access?.id ? String(matched.user_access.id) : null,
-    golferName: matched?.user_access?.golfer_name || null,
+    status: matched ? matched.status : 'none',
+    userAccessId: matched ? matched.userAccessId : null,
+    golferName: matched ? matched.golferName : null,
     hasAccess: Boolean(matched)
   };
 }
@@ -1284,6 +1320,7 @@ module.exports = {
   getPlayingHandicaps,
   requestGolferProductAccess,
   getGolferProductAccessStatus,
+  listGolferProductAccesses,
   updateGolferProductAccessStatus,
   revokeGolferProductAccess,
   getWebhookSettings,

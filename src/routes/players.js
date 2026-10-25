@@ -25,6 +25,27 @@ const ghinNumberValidator = (field) => field
   .withMessage('GHIN number must be 1-10 digits');
 
 /**
+ * GET /api/v1/players/access-list
+ * Every golfer access on Fore Play's USGA partner account (one USGA call per 100 golfers).
+ * Registered before /:ghinNumber so it is not read as a GHIN number.
+ */
+router.get('/access-list', async (req, res) => {
+  try {
+    const accesses = await ghinClient.listGolferProductAccesses();
+    return res.json({ accesses, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    logger.error('Error listing golfer product accesses', { error: error.message });
+    return res.status(502).json({
+      error: {
+        code: 'GHIN_API_ERROR',
+        message: error.message || 'Failed to list golfer product accesses',
+        retryable: true
+      }
+    });
+  }
+});
+
+/**
  * GET /api/v1/players/:ghinNumber
  * Fetch a single player's handicap data
  */
