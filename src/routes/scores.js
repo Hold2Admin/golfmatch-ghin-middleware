@@ -81,6 +81,7 @@ router.get(
     query('played_at_from').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     query('played_at_to').optional().matches(/^\d{4}-\d{2}-\d{2}$/),
     query('mode').optional().isIn(['hbh', 'adjusted']),
+    query('course_id').optional().matches(/^\d{1,10}$/),
     query('page').optional().isInt({ min: 1, max: 10000 }),
     query('per_page').optional().isInt({ min: 1, max: 100 })
   ],
