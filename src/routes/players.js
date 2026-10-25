@@ -141,37 +141,22 @@ router.post(
         forceRefresh: forceRefresh === true,
       });
 
-      // One USGA search per 25 IDs; any ID it doesn't return (or a failed bulk call) falls back
-      // to the single lookup, so the result is never worse than per-player fetching.
-      let bulkById = new Map();
-      try {
-        bulkById = await ghinClient.getPlayersBulk(ghinNumbers);
-      } catch (bulkError) {
-        logger.warn('Bulk player lookup failed; using single lookups', { correlationId: req.correlationId, error: bulkError.message });
-      }
-      const results = await Promise.allSettled(
-        ghinNumbers.map((ghinNumber) => {
-          const bulkPlayer = bulkById.get(String(ghinNumber).trim());
-          if (bulkPlayer) return Promise.resolve(bulkPlayer);
-          return limitBatchPlayerLookup(() => ghinClient.getPlayer(ghinNumber, { suppressSuccessLog: true }));
-        })
-      );
-      const bulkHits = ghinNumbers.filter((n) => bulkById.has(String(n).trim())).length;
-
+      // One USGA golfers/search call per 25 IDs. An ID USGA doesn't return is not found; a failed
+      // call fails the whole batch so the caller keeps its saved values (no per-golfer retries).
+      const bulkById = await ghinClient.getPlayersBulk(ghinNumbers);
       const players = [];
       const notFound = [];
       const errors = [];
-
-      results.forEach((result, index) => {
-        const ghinNumber = ghinNumbers[index];
-        if (result.status === 'fulfilled' && result.value) {
-          players.push(transformGhinPlayer(result.value));
-        } else if (result.status === 'fulfilled' && !result.value) {
-          notFound.push(ghinNumber);
+      ghinNumbers.forEach((ghinNumber) => {
+        const bulkPlayer = bulkById.get(String(ghinNumber).trim());
+        const isReturnedByUsga = bulkPlayer !== undefined;
+        if (isReturnedByUsga) {
+          players.push(transformGhinPlayer(bulkPlayer));
         } else {
-          errors.push({ ghinNumber, error: result.reason?.message });
+          notFound.push(ghinNumber);
         }
       });
+      const bulkHits = players.length;
 
       logger.info('Batch player lookup completed', {
         correlationId: req.correlationId,
