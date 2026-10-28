@@ -54,7 +54,6 @@ describe('scorePostingService', () => {
   test('searchScores returns the canonical scores array', async () => {
     ghinClient.searchScores.mockResolvedValue({
       Scores: [{ id: 1 }, { id: 2 }],
-      TotalResults: 42,
     });
 
     const result = await scorePostingService.searchScores({ golfer_id: '123' }, 'corr-2');
@@ -63,7 +62,6 @@ describe('scorePostingService', () => {
       success: true,
       correlationId: 'corr-2',
       scores: [{ id: 1 }, { id: 2 }],
-      totalResults: 42,
     });
   });
 

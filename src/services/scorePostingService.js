@@ -196,17 +196,12 @@ async function postScore(mode, scorePayload, correlationId) {
 async function searchScores(filters = {}, correlationId) {
   const providerPayload = await ghinClient.searchScores(filters);
   const scores = extractSearchScores(providerPayload);
-  const totalResults = providerPayload?.totalResults
-    ?? providerPayload?.total_results
-    ?? providerPayload?.TotalResults
-    ?? providerPayload?.Total_Results
-    ?? scores.length;
-
+  // USGA's score search returns only the Scores list, with no total count (verified live 10/28/26),
+  // so no total is reported; callers page until a page comes back short.
   return {
     success: true,
     correlationId,
-    scores,
-    totalResults
+    scores
   };
 }
 
