@@ -1046,11 +1046,10 @@ async function getCachedCourseHashes(courseId) {
   };
 }
 
-async function buildMirrorPayloadFromCache(courseId) {
-  const sql = database.sql;
-
-  const courses = await database.query(
-    `SELECT
+// One round trip for everything a course load reads from the cache: the course row (with its
+// expiry), every tee with its ratings, and every hole. (Freshness, the ratings check and the
+// three payload reads used to be five separate trips, 0.3 to 0.7 s each on the Basic-tier cache DB.)
+const COURSE_CACHE_SNAPSHOT_SQL = `SELECT
         CourseId AS courseId,
         CourseName AS courseName,
         ShortCourseName AS shortCourseName,
@@ -1059,19 +1058,14 @@ async function buildMirrorPayloadFromCache(courseId) {
         State AS state,
         Country AS country,
         FacilityId AS facilityId,
-        UpdatedAt AS updatedAt
+        UpdatedAt AS updatedAt,
+        ExpiresAt AS expiresAt,
+        CachedAt AS cachedAt,
+        CacheSource AS cacheSource
      FROM dbo.GHIN_Courses
-     WHERE CourseId = @courseId`,
-    { courseId: { type: sql.VarChar, value: courseId } }
-  );
+     WHERE CourseId = @courseId;
 
-  if (!courses.length) {
-    return null;
-  }
-
-  const course = courses[0];
-  const tees = await database.query(
-    `SELECT
+     SELECT
         TeeId AS teeId,
         TeeName AS teeName,
         Gender AS gender,
@@ -1091,14 +1085,9 @@ async function buildMirrorPayloadFromCache(courseId) {
         YardageB9 AS yardageB9
      FROM dbo.GHIN_Tees
      WHERE CourseId = @courseId
-     ORDER BY TeeId`,
-    { courseId: { type: sql.VarChar(50), value: course.courseId } }
-  );
+     ORDER BY TeeId;
 
-  const holesByTee = new Map();
-
-  const allHoles = await database.query(
-    `SELECT
+     SELECT
         t.TeeId AS teeId,
         h.HoleNumber AS holeNumber,
         h.Par AS par,
@@ -1107,9 +1096,43 @@ async function buildMirrorPayloadFromCache(courseId) {
      FROM dbo.GHIN_Holes h
        INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
        WHERE t.CourseId = @courseId
-     ORDER BY t.TeeId, h.HoleNumber`,
-      { courseId: { type: sql.VarChar(50), value: course.courseId } }
+     ORDER BY t.TeeId, h.HoleNumber;`;
+
+async function readCourseCacheSnapshot(courseId) {
+  const sql = database.sql;
+  const [courses, tees, allHoles] = await database.queryRecordsets(
+    COURSE_CACHE_SNAPSHOT_SQL,
+    { courseId: { type: sql.VarChar(50), value: String(courseId) } }
   );
+  if (!courses.length) {
+    return { exists: false, courseRow: null, tees: [], allHoles: [] };
+  }
+  return { exists: true, courseRow: courses[0], tees, allHoles };
+}
+
+// Same test as courseHasCachedRatings: any of the six stored rating columns is set.
+function cachedTeeRowHasRatings(tee) {
+  return tee.courseRating18 !== null
+    || tee.slopeRating18 !== null
+    || tee.courseRatingF9 !== null
+    || tee.slopeRatingF9 !== null
+    || tee.courseRatingB9 !== null
+    || tee.slopeRatingB9 !== null;
+}
+
+async function buildMirrorPayloadFromCache(courseId) {
+  const snapshot = await readCourseCacheSnapshot(courseId);
+  return mirrorPayloadFromCacheSnapshot(snapshot);
+}
+
+function mirrorPayloadFromCacheSnapshot(snapshot) {
+  if (!snapshot.exists) {
+    return null;
+  }
+
+  const course = snapshot.courseRow;
+  const { tees, allHoles } = snapshot;
+  const holesByTee = new Map();
 
   for (const hole of allHoles) {
     const key = String(hole.teeId);
@@ -1825,6 +1848,72 @@ async function courseHasCachedRatings(courseId) {
   return Boolean(rows && rows.length);
 }
 
+// A course rating stored in a DECIMAL(4,1) column comes back rounded to one decimal.
+function toStoredCourseRating(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return Math.round(Number(value) * 10) / 10;
+}
+
+function toStoredSlope(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return Math.round(value);
+}
+
+/**
+ * The rating values a ratings-only load writes for each tee, one row per distinct tee id,
+ * exactly as dbo.GHIN_Tees stores them. `course` is usaGhinApiClient.getCourse's result:
+ * getCourse returns null unless USGA sent a TeeSets array, and every normalized tee has a teeId.
+ */
+function ratingsOnlyTeeRows(course) {
+  const rows = [];
+  const seenTeeIds = new Set();
+  for (const tee of course.tees) {
+    const teeId = String(tee.teeId).trim();
+    if (seenTeeIds.has(teeId)) continue;
+    seenTeeIds.add(teeId);
+    rows.push({
+      teeId,
+      courseRating18: toStoredCourseRating(tee.courseRating),
+      slopeRating18: toStoredSlope(tee.slope),
+      courseRatingF9: toStoredCourseRating(tee.courseRatingF9),
+      slopeRatingF9: toStoredSlope(tee.slopeRatingF9),
+      courseRatingB9: toStoredCourseRating(tee.courseRatingB9),
+      slopeRatingB9: toStoredSlope(tee.slopeRatingB9)
+    });
+  }
+  return rows;
+}
+
+/**
+ * The cache snapshot as it reads after upsertCacheDbRatingsOnly: matching tees carry the new
+ * ratings; tee and hole structure is unchanged by a ratings-only write.
+ */
+function applyRatingsOnlyToSnapshot(snapshot, course) {
+  const ratingsByTeeId = new Map(ratingsOnlyTeeRows(course).map((row) => [row.teeId, row]));
+  return {
+    ...snapshot,
+    tees: snapshot.tees.map((tee) => {
+      const ratings = ratingsByTeeId.get(String(tee.teeId));
+      if (!ratings) {
+        return tee;
+      }
+      return {
+        ...tee,
+        courseRating18: ratings.courseRating18,
+        slopeRating18: ratings.slopeRating18,
+        courseRatingF9: ratings.courseRatingF9,
+        slopeRatingF9: ratings.slopeRatingF9,
+        courseRatingB9: ratings.courseRatingB9,
+        slopeRatingB9: ratings.slopeRatingB9
+      };
+    })
+  };
+}
+
 /**
  * Phase 2: write Course Rating / Slope only; leave public tee/hole structure untouched.
  */
@@ -1849,19 +1938,15 @@ async function upsertCacheDbRatingsOnly(course, options = {}) {
     cacheSource: { type: sql.NVarChar(50), value: cacheSource }
   };
   const valueRows = [];
-  const seenTeeIds = new Set();
-  for (const tee of course.tees || []) {
-    const teeId = String(tee.teeId || '').trim();
-    if (!teeId || seenTeeIds.has(teeId)) continue;
-    seenTeeIds.add(teeId);
+  for (const teeRatings of ratingsOnlyTeeRows(course)) {
     const i = valueRows.length;
-    params[`t${i}`] = { type: sql.VarChar(50), value: teeId };
-    params[`cr${i}`] = { type: sql.Decimal(4, 1), value: tee.courseRating ?? null };
-    params[`sr${i}`] = { type: sql.Int, value: tee.slope != null ? Math.round(tee.slope) : null };
-    params[`crf${i}`] = { type: sql.Decimal(4, 1), value: tee.courseRatingF9 ?? null };
-    params[`srf${i}`] = { type: sql.Int, value: tee.slopeRatingF9 != null ? Math.round(tee.slopeRatingF9) : null };
-    params[`crb${i}`] = { type: sql.Decimal(4, 1), value: tee.courseRatingB9 ?? null };
-    params[`srb${i}`] = { type: sql.Int, value: tee.slopeRatingB9 != null ? Math.round(tee.slopeRatingB9) : null };
+    params[`t${i}`] = { type: sql.VarChar(50), value: teeRatings.teeId };
+    params[`cr${i}`] = { type: sql.Decimal(4, 1), value: teeRatings.courseRating18 };
+    params[`sr${i}`] = { type: sql.Int, value: teeRatings.slopeRating18 };
+    params[`crf${i}`] = { type: sql.Decimal(4, 1), value: teeRatings.courseRatingF9 };
+    params[`srf${i}`] = { type: sql.Int, value: teeRatings.slopeRatingF9 };
+    params[`crb${i}`] = { type: sql.Decimal(4, 1), value: teeRatings.courseRatingB9 };
+    params[`srb${i}`] = { type: sql.Int, value: teeRatings.slopeRatingB9 };
     valueRows.push(`(@t${i}, @cr${i}, @sr${i}, @crf${i}, @srf${i}, @crb${i}, @srb${i})`);
   }
 
@@ -2031,17 +2116,23 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
   const fullSync = Boolean(options.fullSync) || fromWebhook;
   const syncMirror = options.syncMirror !== false;
 
-  const freshness = await timing.step('freshness', () => getCachedCourseFreshness(id));
-  const hasPublic = Boolean(freshness.exists);
-  const hasRatings = hasPublic ? await timing.step('hasRatings', () => courseHasCachedRatings(id)) : false;
-  const ratingsFresh = hasPublic && freshness.fresh && hasRatings;
-  const isManualCourse = String(id).toUpperCase().startsWith('MANUAL-')
-    || String(freshness.row?.cacheSource || '').trim().toUpperCase() === 'MANUAL';
+  const snapshot = await timing.step('cacheSnapshot', () => readCourseCacheSnapshot(id));
+  const hasPublic = snapshot.exists;
+  const cacheFresh = hasPublic && courseCachePolicy.isCacheFresh(snapshot.courseRow);
+  const hasRatings = snapshot.tees.some(cachedTeeRowHasRatings);
+  const ratingsFresh = cacheFresh && hasRatings;
+  const snapshotFreshness = {
+    fresh: cacheFresh,
+    expiresAt: hasPublic ? snapshot.courseRow.expiresAt : null
+  };
+  const isManualCacheSource = hasPublic
+    && String(snapshot.courseRow.cacheSource).trim().toUpperCase() === 'MANUAL';
+  const isManualCourse = String(id).toUpperCase().startsWith('MANUAL-') || isManualCacheSource;
 
   // Manual/non-USGA courses cannot be re-fetched from GHIN; serve cache only.
   if (isManualCourse) {
     timing.path = 'manual_cache';
-    const cached = await timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id));
+    const cached = mirrorPayloadFromCacheSnapshot(snapshot);
     if (cached) {
       return {
         course: cached,
@@ -2049,6 +2140,7 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
         ratingsFresh: hasRatings,
         ratingsOnly: false,
         cacheMode: courseCachePolicy.getCourseCacheMode(),
+        cacheFreshness: snapshotFreshness,
         manual: true
       };
     }
@@ -2063,16 +2155,14 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
 
   if (!forceRefresh && ratingsFresh) {
     timing.path = 'cache';
-    const cached = await timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id));
-    if (cached) {
-      return {
-        course: cached,
-        source: 'cache',
-        ratingsFresh: true,
-        ratingsOnly: false,
-        cacheMode: courseCachePolicy.getCourseCacheMode()
-      };
-    }
+    return {
+      course: mirrorPayloadFromCacheSnapshot(snapshot),
+      source: 'cache',
+      ratingsFresh: true,
+      ratingsOnly: false,
+      cacheMode: courseCachePolicy.getCourseCacheMode(),
+      cacheFreshness: snapshotFreshness
+    };
   } else if (forceRefresh && courseCachePolicy.isDayTtlMode() && fullSync) {
     await timing.step('invalidate', () => markCourseCacheInvalidated(id));
   }
@@ -2108,31 +2198,40 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
 
     if (useRatingsOnly) {
       timing.path = 'usga_ratings_only';
-      await timing.step('upsertRatingsOnly', () => upsertCacheDbRatingsOnly(course, syncOptions));
-      // The golfdb mirror callback and the cache re-read both only need the cache write above, so they
-      // run together (they ran one after the other: about 0.3 s each on a forced refresh). A mirror
-      // failure still fails the load, as before.
-      const [, cached] = await Promise.all([
-        syncMirror ? timing.step('mirrorRatingsOnly', () => mirrorRatingsOnlyToGolfDb(course)) : null,
-        timing.step('buildFromCache', () => buildMirrorPayloadFromCache(id))
+      // The cache write and the golfdb mirror callback both work from the USGA payload, so they run
+      // together. The returned course is the snapshot read above with the new ratings applied, which
+      // is what a re-read would return: a ratings-only write leaves tee and hole structure alone.
+      // Either failure still fails the load, as before.
+      const [ratingsWrite] = await Promise.all([
+        timing.step('upsertRatingsOnly', () => upsertCacheDbRatingsOnly(course, syncOptions)),
+        syncMirror ? timing.step('mirrorRatingsOnly', () => mirrorRatingsOnlyToGolfDb(course)) : null
       ]);
       return {
-        course: cached || course,
+        course: mirrorPayloadFromCacheSnapshot(applyRatingsOnlyToSnapshot(snapshot, course)),
         source: options.fromWebhook ? 'webhook_refetch' : 'usga_ratings',
         ratingsFresh: true,
         ratingsOnly: true,
-        cacheMode: courseCachePolicy.getCourseCacheMode()
+        cacheMode: courseCachePolicy.getCourseCacheMode(),
+        cacheFreshness: {
+          fresh: courseCachePolicy.isCacheFresh({ expiresAt: ratingsWrite.expiresAt }),
+          expiresAt: ratingsWrite.expiresAt
+        }
       };
     }
 
     timing.path = 'usga_full_sync';
     await timing.step('processCourseSync', () => processCourseSync(course, syncOptions));
+    const syncedFreshness = await timing.step('freshness', () => getCachedCourseFreshness(id));
     return {
       course,
       source: fromWebhook ? 'webhook_refetch' : 'usga_fetch',
       ratingsFresh: true,
       ratingsOnly: false,
-      cacheMode: courseCachePolicy.getCourseCacheMode()
+      cacheMode: courseCachePolicy.getCourseCacheMode(),
+      cacheFreshness: {
+        fresh: syncedFreshness.fresh,
+        expiresAt: syncedFreshness.exists ? syncedFreshness.row.expiresAt : null
+      }
     };
   })().finally(() => {
     courseFetchInFlight.delete(id);

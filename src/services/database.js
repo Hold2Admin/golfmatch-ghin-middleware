@@ -257,11 +257,36 @@ async function query(sqlQuery, params = {}) {
   return result.recordset;
 }
 
+/**
+ * Execute a parameterized batch of several SELECTs in one round trip; returns every result set in order.
+ */
+async function queryRecordsets(sqlQuery, params = {}) {
+  const activePool = await connect();
+  if (!activePool) {
+    const missing = getMissingDbConfigFields(getRuntimeDbConfig());
+    throw new Error(`Database not configured (${missing.join(', ')})`);
+  }
+
+  const request = activePool.request();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value && typeof value === 'object' && 'type' in value && 'value' in value) {
+      request.input(key, value.type, value.value);
+    } else {
+      request.input(key, value);
+    }
+  });
+
+  const result = await request.query(sqlQuery);
+  return result.recordsets;
+}
+
 module.exports = {
   connect,
   checkHealth,
   close,
   getPool,
   query,
+  queryRecordsets,
   sql
 };

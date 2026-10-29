@@ -8,7 +8,7 @@ const { param, body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinCourse, transformGhinTee, transformGhinHole } = require('../services/transformers/courseTransformer');
-const { getOrFetchCourse, getCachedCourseFreshness } = require('../services/courseSyncService');
+const { getOrFetchCourse } = require('../services/courseSyncService');
 const courseCachePolicy = require('../services/courseCachePolicy');
 
 const logger = createLogger('courses');
@@ -149,13 +149,13 @@ router.get(
         });
       }
 
-      const freshness = await getCachedCourseFreshness(courseId);
+      // The load already knows the cache expiry it read or wrote, so the route no longer re-queries it.
       return res.json({
         courseId,
         source: result.source,
         cacheMode: result.cacheMode || courseCachePolicy.getCourseCacheMode(),
-        fresh: freshness.fresh,
-        expiresAt: freshness.row?.expiresAt || null,
+        fresh: result.cacheFreshness.fresh,
+        expiresAt: result.cacheFreshness.expiresAt,
         course: result.course
       });
     } catch (error) {
