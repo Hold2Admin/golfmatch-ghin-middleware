@@ -226,6 +226,37 @@ router.get(
 );
 
 router.get(
+  '/:ghinCourseId/location',
+  [
+    param('ghinCourseId').isInt({ min: 1 }).withMessage('Invalid GHIN course ID')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        error: { code: 'INVALID_REQUEST', message: 'Invalid course ID format', details: errors.array() }
+      });
+    }
+
+    const { ghinCourseId } = req.params;
+    try {
+      const location = await ghinClient.getCourseLocation(ghinCourseId);
+      if (!location) {
+        return res.status(404).json({
+          error: { code: 'GHIN_COURSE_NOT_FOUND', message: `Course with ID ${ghinCourseId} not found`, retryable: false }
+        });
+      }
+      return res.json({ success: true, ...location });
+    } catch (error) {
+      logger.error('Error fetching course location', { ghinCourseId, error: error.message });
+      return res.status(502).json({
+        error: { code: 'GHIN_API_ERROR', message: 'Failed to fetch course location', retryable: true }
+      });
+    }
+  }
+);
+
+router.get(
   '/:ghinCourseId/tee-posting-eligibility',
   [
     param('ghinCourseId').isString().trim().isLength({ min: 1, max: 100 }).withMessage('Invalid GHIN course ID'),

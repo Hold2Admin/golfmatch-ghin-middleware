@@ -466,6 +466,29 @@ async function getCoursePostingSeason(courseId) {
   return _normalizeCoursePostingSeason(data, String(courseId));
 }
 
+/**
+ * Course location from USGA's course record (Facility.GeoLocation*).
+ * Returns null when USGA has no course, or a location with null coordinates when USGA has none on file.
+ */
+async function getCourseLocation(courseId) {
+  const data = await request('GET', `/courses/${courseId}.json`);
+  if (!data || !data.Facility) return null;
+  return _normalizeCourseLocation(data.Facility, String(courseId));
+}
+
+function _normalizeCourseLocation(facility, courseId) {
+  const latitude = Number(facility.GeoLocationLatitude);
+  const longitude = Number(facility.GeoLocationLongitude);
+  const hasCoordinates = Number.isFinite(latitude) && Number.isFinite(longitude)
+    && facility.GeoLocationLatitude !== null && facility.GeoLocationLongitude !== null;
+  return {
+    courseId,
+    latitude: hasCoordinates ? latitude : null,
+    longitude: hasCoordinates ? longitude : null,
+    formattedAddress: typeof facility.GeoLocationFormattedAddress === 'string' ? facility.GeoLocationFormattedAddress : null,
+  };
+}
+
 function _normalizePostingHoleCount(value) {
   const parsed = Number(value);
   return parsed === 9 ? 9 : 18;
@@ -1316,6 +1339,7 @@ module.exports = {
   searchGolfers,
   getCourse,
   getCoursePostingSeason,
+  getCourseLocation,
   getCourseTeePostingEligibility,
   searchCourses,
   postScore,

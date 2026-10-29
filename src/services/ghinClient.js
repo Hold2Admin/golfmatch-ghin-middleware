@@ -245,6 +245,15 @@ async function getCoursePostingSeason(ghinCourseId) {
   return usaGhinApiClient.getCoursePostingSeason(ghinCourseId);
 }
 
+async function getCourseLocation(ghinCourseId) {
+  if (config.ghin.useMock) {
+    logger.info(`[MOCK] No course location for course ${ghinCourseId}`);
+    return { courseId: String(ghinCourseId), latitude: null, longitude: null, formattedAddress: null };
+  }
+  logger.info(`[LIVE] Fetching location for course ${ghinCourseId} from USGA API source`);
+  return usaGhinApiClient.getCourseLocation(ghinCourseId);
+}
+
 async function getCourseTeePostingEligibility(ghinCourseId, options = {}) {
   if (config.ghin.useMock) {
     logger.info(`[MOCK] Fetching tee posting eligibility for course ${ghinCourseId}`);
@@ -472,6 +481,7 @@ module.exports = {
   revokeGolferProductAccess,
   getCourse,
   getCoursePostingSeason,
+  getCourseLocation,
   getCourseTeePostingEligibility,
   searchCourses,
   postScore,
