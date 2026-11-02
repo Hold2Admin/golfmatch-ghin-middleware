@@ -480,6 +480,37 @@ function hydrateCheckpoint(checkpoint) {
   return next;
 }
 
+// USGA answers 429 "Retry Later" when detail calls arrive too fast. Wait and retry
+// instead of failing the course, so throttled courses are actually checked.
+const USGA_RATE_LIMIT_MAX_ATTEMPTS = 6;
+const USGA_RATE_LIMIT_BASE_DELAY_MS = 2000;
+const USGA_RATE_LIMITED_METHODS = ['getCourse', 'searchCourses'];
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withUsgaRateLimitRetry(rawClient) {
+  const wrapped = { ...rawClient };
+  for (const methodName of USGA_RATE_LIMITED_METHODS) {
+    wrapped[methodName] = async (...callArgs) => {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await rawClient[methodName](...callArgs);
+        } catch (error) {
+          if (error.status !== 429 || attempt >= USGA_RATE_LIMIT_MAX_ATTEMPTS) {
+            throw error;
+          }
+          const delayMs = USGA_RATE_LIMIT_BASE_DELAY_MS * (2 ** (attempt - 1));
+          console.log(`[usga-429] ${methodName}(${callArgs[0]}) attempt ${attempt} rate limited; retrying in ${delayMs}ms`);
+          await waitMs(delayMs);
+        }
+      }
+    };
+  }
+  return wrapped;
+}
+
 function classifyFailure(errorMessage) {
   const message = String(errorMessage || '');
   if (
@@ -500,6 +531,7 @@ function classifyFailure(errorMessage) {
     || message.includes('timeout')
     || message.includes('ECONNRESET')
     || message.includes('ETIMEDOUT')
+    || message.includes('USGA API 429')
   ) {
     return 'retryableOperational';
   }
@@ -1015,7 +1047,7 @@ async function run() {
   process.env.GHIN_MIRROR_CALLBACK_CONCURRENCY = String(args.mirrorConcurrency);
   process.env.GHIN_CACHE_WRITE_CONCURRENCY = String(args.cacheWriteConcurrency);
 
-  const client = require('../src/services/usaGhinApiClient');
+  const client = withUsgaRateLimitRetry(require('../src/services/usaGhinApiClient'));
   const {
     bulkUpsertCoursesToCache,
     processCourseSync,
