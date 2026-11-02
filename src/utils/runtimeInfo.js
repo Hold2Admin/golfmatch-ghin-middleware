@@ -12,9 +12,11 @@ function loadDeploymentInfo() {
   }
 }
 
-function getRuntimeInfo() {
-  const deploymentInfo = loadDeploymentInfo();
+// Read once when the process starts, so /health reports the code that is actually running.
+// Reading it per request reported a new deploy's commit while the old process was still serving.
+const deploymentInfo = loadDeploymentInfo();
 
+function getRuntimeInfo() {
   return {
     appVersion: packageJson.version,
     deploymentVersion: deploymentInfo.deploymentVersion || packageJson.version,
