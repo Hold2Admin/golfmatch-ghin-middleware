@@ -12,6 +12,7 @@ const redis = require('../services/redis');
 const { getRuntimeInfo } = require('../utils/runtimeInfo');
 
 const logger = createLogger('health');
+const SLOW_HEALTH_MS = 1000;
 
 /**
  * GET /api/v1/health
@@ -64,8 +65,20 @@ router.get('/', async (req, res) => {
       // not_configured is treated as healthy (optional service)
     });
 
+    let runtimeInfo;
+    await runCheck('runtimeInfo', async () => {
+      runtimeInfo = getRuntimeInfo();
+    });
+
     const allHealthy = checks.every((c) => c.status === 'healthy');
-    const runtimeInfo = getRuntimeInfo();
+    const totalMs = checks.reduce((sum, c) => sum + c.durationMs, 0);
+    if (totalMs >= SLOW_HEALTH_MS) {
+      // Each step's time goes to App Insights, so a slow probe shows which step took the time.
+      logger.warn('Slow health check', {
+        totalMs,
+        ...Object.fromEntries(checks.map((c) => [`${c.name}Ms`, c.durationMs]))
+      });
+    }
 
     const payload = {
       status: allHealthy ? 'healthy' : 'degraded',
