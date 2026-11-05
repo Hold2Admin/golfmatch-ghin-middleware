@@ -434,6 +434,14 @@ async function searchGolfers(params) {
   if (params.email)      query.email      = params.email;
   if (params.state)      query.state      = params.state;
   if (params.country)    query.country    = params.country;
+  // USGA /golfers/search.json documents status default Active. Omitting it still returns Inactive
+  // rows (verified 11/4/26 on Burnet/Bhandary NY), so name searches must send Active to match
+  // USGA Add Golfers. ID lookups leave status unset so an inactive GHIN can still be fetched.
+  if (params.status) {
+    query.status = params.status;
+  } else if (!params.ghinNumber) {
+    query.status = 'Active';
+  }
 
   // Page through USGA until we have `wanted` golfers or a short page says there are no more.
   const golfers = [];
