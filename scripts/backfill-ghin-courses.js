@@ -876,7 +876,7 @@ async function persistValidatedBatch(batch, bulkUpsertCoursesToCache) {
 
   try {
     const bulkResult = await bulkUpsertCoursesToCache(batch.map((item) => item.course), {
-      cacheSource: 'USGA_WEBHOOK',
+      cacheSource: 'backfill',
       assumeMissingCourses: true
     });
 
