@@ -65,3 +65,26 @@ describe('usaGhinApiClient golfer name search paging', () => {
     expect(searchPages).toEqual([1, 2, 3]);
   });
 });
+
+describe('usaGhinApiClient bulk golfer lookup', () => {
+  test('a 50-golfer batch sends its two 25-ID USGA calls together and keeps each home club row', async () => {
+    const ids = Array.from({ length: 50 }, (_, index) => String(500000 + index));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    global.fetch = jest.fn(async (url) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith('/users/login.json')) {
+        return jsonResponse({ token: 't', user: { id: 1 } });
+      }
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      const rows = u.searchParams.get('golfer_id').split(',').map((id) => ({ ghin: id, first_name: 'A', last_name: 'Smith', is_home_club: true }));
+      return jsonResponse({ golfers: rows });
+    });
+    const result = await client.getGolfersBulk(ids);
+    expect(result.size).toBe(50);
+    expect(maxInFlight).toBe(2);
+  });
+});

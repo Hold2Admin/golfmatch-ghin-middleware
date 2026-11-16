@@ -385,8 +385,12 @@ const BULK_GOLFER_MAX_PAGES = 5;
 async function getGolfersBulk(ghinNumbers) {
   const ids = [...new Set((ghinNumbers || []).map((n) => String(n ?? '').trim()).filter(Boolean))];
   const rowsById = new Map();
+  const chunks = [];
   for (let i = 0; i < ids.length; i += BULK_GOLFER_CHUNK) {
-    const chunk = ids.slice(i, i + BULK_GOLFER_CHUNK);
+    chunks.push(ids.slice(i, i + BULK_GOLFER_CHUNK));
+  }
+  // The chunks (two for a 50-golfer batch) go to USGA together instead of one after another.
+  await Promise.all(chunks.map(async (chunk) => {
     const wanted = new Set(chunk);
     for (let page = 1; page <= BULK_GOLFER_MAX_PAGES; page += 1) {
       const data = await request('GET', '/golfers/search.json', {
@@ -403,7 +407,7 @@ async function getGolfersBulk(ghinNumbers) {
       }
       if (golfers.length < BULK_GOLFER_PER_PAGE) break;
     }
-  }
+  }));
   const result = new Map();
   rowsById.forEach((rows, id) => {
     const homeRow = _findHomeClubRow(rows);
