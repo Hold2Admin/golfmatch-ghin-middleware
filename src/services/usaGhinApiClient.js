@@ -443,15 +443,28 @@ async function searchGolfers(params) {
     query.status = 'Active';
   }
 
-  // Page through USGA until we have `wanted` golfers or a short page says there are no more.
-  const golfers = [];
-  for (let page = 1; golfers.length < wanted; page += 1) {
-    const data = await request('GET', '/golfers/search.json', { ...query, page });
-    const rows = data.golfers ?? [];
+  // Page 1 first: a short page means USGA has no more. When it is full, the other pages that
+  // `wanted` spans are fetched together instead of one after another (a 300-golfer name search
+  // waited on three USGA calls in a row), and the result stops at the first short page.
+  const firstPageRows = await _fetchGolferSearchPage(query, 1);
+  const isFirstPageFull = firstPageRows.length === query.per_page;
+  const pageCount = Math.ceil(wanted / query.per_page);
+  const laterPageNumbers = Array.from({ length: pageCount - 1 }, (_, index) => index + 2);
+  const laterPages = isFirstPageFull
+    ? await Promise.all(laterPageNumbers.map((page) => _fetchGolferSearchPage(query, page)))
+    : [];
+  const golfers = [...firstPageRows];
+  for (const rows of laterPages) {
     golfers.push(...rows);
     if (rows.length < query.per_page) break;
   }
   return golfers.slice(0, wanted).map(_normalizeGolfer);
+}
+
+// One USGA golfers/search page. USGA answers a search with no matches as an empty golfers list (getGolfer reads it the same way).
+async function _fetchGolferSearchPage(query, page) {
+  const data = await request('GET', '/golfers/search.json', { ...query, page });
+  return data.golfers;
 }
 
 // ============================================================
