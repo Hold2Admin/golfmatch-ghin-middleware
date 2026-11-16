@@ -295,8 +295,11 @@ function buildCacheUpsertPayload(courses, options = {}) {
 
   const courseRows = [];
   const teeRows = [];
+  const linkRows = [];
   const holeRows = [];
   const courseIds = [];
+  const teeRowsById = new Map();
+  const holeRowsByKey = new Map();
 
   for (const course of courses || []) {
     if (!course) {
@@ -325,36 +328,70 @@ function buildCacheUpsertPayload(courses, options = {}) {
     });
 
     for (const tee of course.tees || []) {
-      teeRows.push({
-        teeId: String(tee.teeId),
+      const teeId = String(tee.teeId);
+
+      // USGA lists an 18-hole combo tee under both of its 9-hole courses. The physical tee
+      // (side, gender, par, yardage, holes) is stored once; name, default flag and ratings
+      // are per course on GHIN_CourseTees.
+      linkRows.push({
         courseId,
+        teeId,
         teeName: tee.teeName || null,
-        teeSetSide: tee.teeSetSide || 'All18',
-        gender: tee.gender || 'M',
         isDefault: tee.isDefault ? 1 : 0,
         courseRating18: tee.courseRating ?? null,
         slopeRating18: tee.slope != null ? Math.round(tee.slope) : null,
-        par18: tee.par != null ? Math.round(tee.par) : null,
-        yardage18: tee.yardage != null ? Math.round(tee.yardage) : null,
         courseRatingF9: tee.courseRatingF9 ?? null,
         slopeRatingF9: tee.slopeRatingF9 != null ? Math.round(tee.slopeRatingF9) : null,
-        parF9: tee.parF9 != null ? Math.round(tee.parF9) : null,
-        yardageF9: tee.yardageF9 != null ? Math.round(tee.yardageF9) : null,
-        courseRatingB9: tee.courseRatingB9 ?? null,
-        slopeRatingB9: tee.slopeRatingB9 != null ? Math.round(tee.slopeRatingB9) : null,
-        parB9: tee.parB9 != null ? Math.round(tee.parB9) : null,
-        yardageB9: tee.yardageB9 != null ? Math.round(tee.yardageB9) : null
+        courseRatingB9: tee.courseRatingB9,
+        slopeRatingB9: tee.slopeRatingB9 != null ? Math.round(tee.slopeRatingB9) : null
       });
 
+      const teeRow = {
+        teeId,
+        teeSetSide: tee.teeSetSide,
+        gender: tee.gender,
+        par18: tee.par != null ? Math.round(tee.par) : null,
+        yardage18: tee.yardage != null ? Math.round(tee.yardage) : null,
+        parF9: tee.parF9 != null ? Math.round(tee.parF9) : null,
+        yardageF9: tee.yardageF9 != null ? Math.round(tee.yardageF9) : null,
+        parB9: tee.parB9 != null ? Math.round(tee.parB9) : null,
+        yardageB9: tee.yardageB9 != null ? Math.round(tee.yardageB9) : null
+      };
+      const existingTeeRow = teeRowsById.get(teeId);
+      if (existingTeeRow) {
+        if (JSON.stringify(existingTeeRow) !== JSON.stringify(teeRow)) {
+          throw new Error(
+            `GHIN tee ${teeId} is shared by more than one course in this batch but its physical data differs (course ${courseId})`
+          );
+        }
+      } else {
+        teeRowsById.set(teeId, teeRow);
+        teeRows.push(teeRow);
+      }
+
       for (const hole of tee.holes || []) {
-        holeRows.push({
-          courseId,
-          teeId: String(tee.teeId),
+        const holeRow = {
+          teeId,
           holeNumber: hole.holeNumber,
           par: hole.par,
           handicap: hole.handicap,
           yardage: hole.yardage ?? 0
-        });
+        };
+        const holeKey = `${teeId}:${hole.holeNumber}`;
+        const existingHoleRow = holeRowsByKey.get(holeKey);
+        if (existingHoleRow) {
+          if (!existingTeeRow) {
+            throw new Error(`GHIN tee ${teeId} lists hole ${hole.holeNumber} more than once (course ${courseId})`);
+          }
+          if (JSON.stringify(existingHoleRow) !== JSON.stringify(holeRow)) {
+            throw new Error(
+              `GHIN tee ${teeId} hole ${hole.holeNumber} is shared by more than one course in this batch but differs (course ${courseId})`
+            );
+          }
+        } else {
+          holeRowsByKey.set(holeKey, holeRow);
+          holeRows.push(holeRow);
+        }
       }
     }
   }
@@ -363,6 +400,7 @@ function buildCacheUpsertPayload(courses, options = {}) {
     courseIds,
     courseRows,
     teeRows,
+    linkRows,
     holeRows,
     cachedAt: now,
     expiresAt: expiry,
@@ -488,141 +526,15 @@ async function mergeCacheCourseHeaders(tx, payload) {
     `);
 }
 
-async function hasExistingCacheChildren(tx, payload) {
-  const sql = database.sql;
-  const result = await tx.request()
-    .input('courseIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.courseIds))
-    .query(`
-      SELECT TOP 1 1 AS hasExisting
-      FROM dbo.GHIN_Tees t
-      WHERE t.CourseId IN (SELECT j.CourseId FROM OPENJSON(@courseIdsJson) WITH (CourseId VARCHAR(50) '$') j);
-    `);
-
-  return result.recordset.length > 0;
-}
-
-async function insertCacheCourseChildren(tx, payload) {
-  const sql = database.sql;
-  const result = await tx.request()
-    .input('teesJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.teeRows))
-    .input('holesJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.holeRows))
-    .input('cachedAt', sql.DateTime2, payload.cachedAt)
-    .query(`
-      DECLARE @TeesStartedAt DATETIME2 = SYSUTCDATETIME();
-
-      INSERT INTO dbo.GHIN_Tees (
-        CourseId,
-        TeeId,
-        TeeName,
-        TeeSetSide,
-        Gender,
-        IsDefault,
-        CourseRating18,
-        SlopeRating18,
-        Par18,
-        Yardage18,
-        CourseRatingF9,
-        SlopeRatingF9,
-        ParF9,
-        YardageF9,
-        CourseRatingB9,
-        SlopeRatingB9,
-        ParB9,
-        YardageB9,
-        CachedAt
-      )
-      SELECT
-        src.courseId,
-        src.teeId,
-        src.teeName,
-        src.teeSetSide,
-        src.gender,
-        src.isDefault,
-        src.courseRating18,
-        src.slopeRating18,
-        src.par18,
-        src.yardage18,
-        src.courseRatingF9,
-        src.slopeRatingF9,
-        src.parF9,
-        src.yardageF9,
-        src.courseRatingB9,
-        src.slopeRatingB9,
-        src.parB9,
-        src.yardageB9,
-        @cachedAt
-      FROM OPENJSON(@teesJson)
-      WITH (
-        teeId VARCHAR(50) '$.teeId',
-        courseId VARCHAR(50) '$.courseId',
-        teeName NVARCHAR(100) '$.teeName',
-        teeSetSide VARCHAR(10) '$.teeSetSide',
-        gender CHAR(1) '$.gender',
-        isDefault BIT '$.isDefault',
-        courseRating18 DECIMAL(4,1) '$.courseRating18',
-        slopeRating18 INT '$.slopeRating18',
-        par18 INT '$.par18',
-        yardage18 INT '$.yardage18',
-        courseRatingF9 DECIMAL(4,1) '$.courseRatingF9',
-        slopeRatingF9 INT '$.slopeRatingF9',
-        parF9 INT '$.parF9',
-        yardageF9 INT '$.yardageF9',
-        courseRatingB9 DECIMAL(4,1) '$.courseRatingB9',
-        slopeRatingB9 INT '$.slopeRatingB9',
-        parB9 INT '$.parB9',
-        yardageB9 INT '$.yardageB9'
-      ) AS src;
-
-      DECLARE @TeesDurationMs INT = DATEDIFF(MILLISECOND, @TeesStartedAt, SYSUTCDATETIME());
-      DECLARE @HolesStartedAt DATETIME2 = SYSUTCDATETIME();
-
-      INSERT INTO dbo.GHIN_Holes (
-        TeeId,
-        HoleNumber,
-        Par,
-        Handicap,
-        Yardage
-      )
-      SELECT
-        src.teeId,
-        src.holeNumber,
-        src.par,
-        src.handicap,
-        src.yardage
-      FROM OPENJSON(@holesJson)
-      WITH (
-        teeId VARCHAR(50) '$.teeId',
-        holeNumber INT '$.holeNumber',
-        par INT '$.par',
-        handicap INT '$.handicap',
-        yardage INT '$.yardage'
-      ) AS src;
-
-      DECLARE @HolesDurationMs INT = DATEDIFF(MILLISECOND, @HolesStartedAt, SYSUTCDATETIME());
-
-      SELECT
-        @TeesDurationMs AS teesDurationMs,
-        @HolesDurationMs AS holesDurationMs;
-    `);
-
-  const timings = result.recordset?.[0] || {};
-
-  return {
-    teesDurationMs: Number(timings.teesDurationMs || 0),
-    holesDurationMs: Number(timings.holesDurationMs || 0)
-  };
-}
-
+// Writes the staged courses' tees, course-tee links and holes. A tee shared by two courses
+// (an 18-hole combo under both 9-hole courses) is written once; a tee is deleted only when no
+// course links to it anymore.
 async function mergeCacheCourseChildren(tx, payload) {
-  const existingChildren = await hasExistingCacheChildren(tx, payload);
-  if (!existingChildren) {
-    return insertCacheCourseChildren(tx, payload);
-  }
-
   const sql = database.sql;
   const result = await tx.request()
     .input('courseIdsJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.courseIds))
     .input('teesJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.teeRows))
+    .input('linksJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.linkRows))
     .input('holesJson', sql.NVarChar(sql.MAX), JSON.stringify(payload.holeRows))
     .input('cachedAt', sql.DateTime2, payload.cachedAt)
     .query(`
@@ -633,24 +545,29 @@ async function mergeCacheCourseChildren(tx, payload) {
       );
 
       CREATE TABLE #StageTees (
-        CourseId VARCHAR(50) NOT NULL,
         TeeId VARCHAR(50) NOT NULL PRIMARY KEY,
-        TeeName NVARCHAR(100) NULL,
         TeeSetSide VARCHAR(10) NOT NULL,
         Gender CHAR(1) NOT NULL,
+        Par18 INT NULL,
+        Yardage18 INT NULL,
+        ParF9 INT NULL,
+        YardageF9 INT NULL,
+        ParB9 INT NULL,
+        YardageB9 INT NULL
+      );
+
+      CREATE TABLE #StageLinks (
+        CourseId VARCHAR(50) NOT NULL,
+        TeeId VARCHAR(50) NOT NULL,
+        TeeName NVARCHAR(100) NULL,
         IsDefault BIT NOT NULL,
         CourseRating18 DECIMAL(4,1) NULL,
         SlopeRating18 INT NULL,
-        Par18 INT NULL,
-        Yardage18 INT NULL,
         CourseRatingF9 DECIMAL(4,1) NULL,
         SlopeRatingF9 INT NULL,
-        ParF9 INT NULL,
-        YardageF9 INT NULL,
         CourseRatingB9 DECIMAL(4,1) NULL,
         SlopeRatingB9 INT NULL,
-        ParB9 INT NULL,
-        YardageB9 INT NULL
+        PRIMARY KEY (CourseId, TeeId)
       );
 
       CREATE TABLE #StageHoles (
@@ -662,69 +579,83 @@ async function mergeCacheCourseChildren(tx, payload) {
         PRIMARY KEY (TeeId, HoleNumber)
       );
 
+      CREATE TABLE #RemovedLinkTees (
+        TeeId VARCHAR(50) NOT NULL
+      );
+
       INSERT INTO #StageCourseIds (CourseId)
       SELECT [value]
       FROM OPENJSON(@courseIdsJson);
 
       INSERT INTO #StageTees (
-        CourseId,
         TeeId,
-        TeeName,
         TeeSetSide,
         Gender,
-        IsDefault,
-        CourseRating18,
-        SlopeRating18,
         Par18,
         Yardage18,
-        CourseRatingF9,
-        SlopeRatingF9,
         ParF9,
         YardageF9,
-        CourseRatingB9,
-        SlopeRatingB9,
         ParB9,
         YardageB9
       )
       SELECT
-        src.courseId,
         src.teeId,
-        src.teeName,
         src.teeSetSide,
         src.gender,
-        src.isDefault,
-        src.courseRating18,
-        src.slopeRating18,
         src.par18,
         src.yardage18,
-        src.courseRatingF9,
-        src.slopeRatingF9,
         src.parF9,
         src.yardageF9,
-        src.courseRatingB9,
-        src.slopeRatingB9,
         src.parB9,
         src.yardageB9
       FROM OPENJSON(@teesJson)
       WITH (
         teeId VARCHAR(50) '$.teeId',
-        courseId VARCHAR(50) '$.courseId',
-        teeName NVARCHAR(100) '$.teeName',
         teeSetSide VARCHAR(10) '$.teeSetSide',
         gender CHAR(1) '$.gender',
+        par18 INT '$.par18',
+        yardage18 INT '$.yardage18',
+        parF9 INT '$.parF9',
+        yardageF9 INT '$.yardageF9',
+        parB9 INT '$.parB9',
+        yardageB9 INT '$.yardageB9'
+      ) AS src;
+
+      INSERT INTO #StageLinks (
+        CourseId,
+        TeeId,
+        TeeName,
+        IsDefault,
+        CourseRating18,
+        SlopeRating18,
+        CourseRatingF9,
+        SlopeRatingF9,
+        CourseRatingB9,
+        SlopeRatingB9
+      )
+      SELECT
+        src.courseId,
+        src.teeId,
+        src.teeName,
+        src.isDefault,
+        src.courseRating18,
+        src.slopeRating18,
+        src.courseRatingF9,
+        src.slopeRatingF9,
+        src.courseRatingB9,
+        src.slopeRatingB9
+      FROM OPENJSON(@linksJson)
+      WITH (
+        courseId VARCHAR(50) '$.courseId',
+        teeId VARCHAR(50) '$.teeId',
+        teeName NVARCHAR(100) '$.teeName',
         isDefault BIT '$.isDefault',
         courseRating18 DECIMAL(4,1) '$.courseRating18',
         slopeRating18 INT '$.slopeRating18',
-        par18 INT '$.par18',
-        yardage18 INT '$.yardage18',
         courseRatingF9 DECIMAL(4,1) '$.courseRatingF9',
         slopeRatingF9 INT '$.slopeRatingF9',
-        parF9 INT '$.parF9',
-        yardageF9 INT '$.yardageF9',
         courseRatingB9 DECIMAL(4,1) '$.courseRatingB9',
-        slopeRatingB9 INT '$.slopeRatingB9',
-        parB9 INT '$.parB9',
-        yardageB9 INT '$.yardageB9'
+        slopeRatingB9 INT '$.slopeRatingB9'
       ) AS src;
 
       INSERT INTO #StageHoles (
@@ -749,25 +680,14 @@ async function mergeCacheCourseChildren(tx, payload) {
         yardage INT '$.yardage'
       ) AS src;
 
-      CREATE INDEX IX_StageTees_CourseId ON #StageTees (CourseId);
-
       UPDATE target
       SET
-        CourseId = src.CourseId,
-        TeeName = src.TeeName,
         TeeSetSide = src.TeeSetSide,
         Gender = src.Gender,
-        IsDefault = src.IsDefault,
-        CourseRating18 = src.CourseRating18,
-        SlopeRating18 = src.SlopeRating18,
         Par18 = src.Par18,
         Yardage18 = src.Yardage18,
-        CourseRatingF9 = src.CourseRatingF9,
-        SlopeRatingF9 = src.SlopeRatingF9,
         ParF9 = src.ParF9,
         YardageF9 = src.YardageF9,
-        CourseRatingB9 = src.CourseRatingB9,
-        SlopeRatingB9 = src.SlopeRatingB9,
         ParB9 = src.ParB9,
         YardageB9 = src.YardageB9,
         CachedAt = @cachedAt,
@@ -776,68 +696,98 @@ async function mergeCacheCourseChildren(tx, payload) {
       INNER JOIN #StageTees src
         ON src.TeeId = target.TeeId
       WHERE
-        ISNULL(target.CourseId, '') <> ISNULL(src.CourseId, '')
-        OR ISNULL(target.TeeName, '') <> ISNULL(src.TeeName, '')
-        OR ISNULL(target.TeeSetSide, '') <> ISNULL(src.TeeSetSide, '')
-        OR ISNULL(target.Gender, '') <> ISNULL(src.Gender, '')
-        OR ISNULL(target.IsDefault, 0) <> ISNULL(src.IsDefault, 0)
-        OR ISNULL(target.CourseRating18, -1) <> ISNULL(src.CourseRating18, -1)
-        OR ISNULL(target.SlopeRating18, -1) <> ISNULL(src.SlopeRating18, -1)
+        target.TeeSetSide <> src.TeeSetSide
+        OR target.Gender <> src.Gender
         OR ISNULL(target.Par18, -1) <> ISNULL(src.Par18, -1)
         OR ISNULL(target.Yardage18, -1) <> ISNULL(src.Yardage18, -1)
-        OR ISNULL(target.CourseRatingF9, -1) <> ISNULL(src.CourseRatingF9, -1)
-        OR ISNULL(target.SlopeRatingF9, -1) <> ISNULL(src.SlopeRatingF9, -1)
         OR ISNULL(target.ParF9, -1) <> ISNULL(src.ParF9, -1)
         OR ISNULL(target.YardageF9, -1) <> ISNULL(src.YardageF9, -1)
-        OR ISNULL(target.CourseRatingB9, -1) <> ISNULL(src.CourseRatingB9, -1)
-        OR ISNULL(target.SlopeRatingB9, -1) <> ISNULL(src.SlopeRatingB9, -1)
         OR ISNULL(target.ParB9, -1) <> ISNULL(src.ParB9, -1)
         OR ISNULL(target.YardageB9, -1) <> ISNULL(src.YardageB9, -1);
 
       INSERT INTO dbo.GHIN_Tees (
-        CourseId,
         TeeId,
-        TeeName,
         TeeSetSide,
         Gender,
-        IsDefault,
-        CourseRating18,
-        SlopeRating18,
         Par18,
         Yardage18,
-        CourseRatingF9,
-        SlopeRatingF9,
         ParF9,
         YardageF9,
-        CourseRatingB9,
-        SlopeRatingB9,
         ParB9,
         YardageB9,
         CachedAt
       )
       SELECT
-        src.CourseId,
         src.TeeId,
-        src.TeeName,
         src.TeeSetSide,
         src.Gender,
-        src.IsDefault,
-        src.CourseRating18,
-        src.SlopeRating18,
         src.Par18,
         src.Yardage18,
-        src.CourseRatingF9,
-        src.SlopeRatingF9,
         src.ParF9,
         src.YardageF9,
-        src.CourseRatingB9,
-        src.SlopeRatingB9,
         src.ParB9,
         src.YardageB9,
         @cachedAt
       FROM #StageTees src
       LEFT JOIN dbo.GHIN_Tees target
         ON target.TeeId = src.TeeId
+      WHERE target.TeeId IS NULL;
+
+      UPDATE target
+      SET
+        TeeName = src.TeeName,
+        IsDefault = src.IsDefault,
+        CourseRating18 = src.CourseRating18,
+        SlopeRating18 = src.SlopeRating18,
+        CourseRatingF9 = src.CourseRatingF9,
+        SlopeRatingF9 = src.SlopeRatingF9,
+        CourseRatingB9 = src.CourseRatingB9,
+        SlopeRatingB9 = src.SlopeRatingB9,
+        CachedAt = @cachedAt,
+        UpdatedAt = GETUTCDATE()
+      FROM dbo.GHIN_CourseTees target
+      INNER JOIN #StageLinks src
+        ON src.CourseId = target.CourseId
+       AND src.TeeId = target.TeeId
+      WHERE
+        ISNULL(target.TeeName, '') <> ISNULL(src.TeeName, '')
+        OR target.IsDefault <> src.IsDefault
+        OR ISNULL(target.CourseRating18, -1) <> ISNULL(src.CourseRating18, -1)
+        OR ISNULL(target.SlopeRating18, -1) <> ISNULL(src.SlopeRating18, -1)
+        OR ISNULL(target.CourseRatingF9, -1) <> ISNULL(src.CourseRatingF9, -1)
+        OR ISNULL(target.SlopeRatingF9, -1) <> ISNULL(src.SlopeRatingF9, -1)
+        OR ISNULL(target.CourseRatingB9, -1) <> ISNULL(src.CourseRatingB9, -1)
+        OR ISNULL(target.SlopeRatingB9, -1) <> ISNULL(src.SlopeRatingB9, -1);
+
+      INSERT INTO dbo.GHIN_CourseTees (
+        CourseId,
+        TeeId,
+        TeeName,
+        IsDefault,
+        CourseRating18,
+        SlopeRating18,
+        CourseRatingF9,
+        SlopeRatingF9,
+        CourseRatingB9,
+        SlopeRatingB9,
+        CachedAt
+      )
+      SELECT
+        src.CourseId,
+        src.TeeId,
+        src.TeeName,
+        src.IsDefault,
+        src.CourseRating18,
+        src.SlopeRating18,
+        src.CourseRatingF9,
+        src.SlopeRatingF9,
+        src.CourseRatingB9,
+        src.SlopeRatingB9,
+        @cachedAt
+      FROM #StageLinks src
+      LEFT JOIN dbo.GHIN_CourseTees target
+        ON target.CourseId = src.CourseId
+       AND target.TeeId = src.TeeId
       WHERE target.TeeId IS NULL;
 
       DECLARE @TeesDurationMs INT = DATEDIFF(MILLISECOND, @TeesStartedAt, SYSUTCDATETIME());
@@ -886,12 +836,24 @@ async function mergeCacheCourseChildren(tx, payload) {
       WHERE src.TeeId IS NULL;
 
       DELETE target
-      FROM dbo.GHIN_Tees target
+      OUTPUT deleted.TeeId INTO #RemovedLinkTees (TeeId)
+      FROM dbo.GHIN_CourseTees target
       INNER JOIN #StageCourseIds courseIds
         ON courseIds.CourseId = target.CourseId
-      LEFT JOIN #StageTees src
-        ON src.TeeId = target.TeeId
+      LEFT JOIN #StageLinks src
+        ON src.CourseId = target.CourseId
+       AND src.TeeId = target.TeeId
       WHERE src.TeeId IS NULL;
+
+      DELETE target
+      FROM dbo.GHIN_Tees target
+      INNER JOIN (SELECT DISTINCT TeeId FROM #RemovedLinkTees) removed
+        ON removed.TeeId = target.TeeId
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM dbo.GHIN_CourseTees remaining
+        WHERE remaining.TeeId = target.TeeId
+      );
 
       DECLARE @HolesDurationMs INT = DATEDIFF(MILLISECOND, @HolesStartedAt, SYSUTCDATETIME());
 
@@ -1022,6 +984,9 @@ async function ensureCacheTables() {
 
     IF OBJECT_ID('dbo.GHIN_Holes', 'U') IS NULL
       THROW 50012, 'CacheDB table missing: dbo.GHIN_Holes.', 1;
+
+    IF OBJECT_ID('dbo.GHIN_CourseTees', 'U') IS NULL
+      THROW 50013, 'CacheDB table missing: dbo.GHIN_CourseTees (run cache-db migration 007).', 1;
   `);
 
   cacheTablesEnsured = true;
@@ -1066,37 +1031,38 @@ const COURSE_CACHE_SNAPSHOT_SQL = `SELECT
      WHERE CourseId = @courseId;
 
      SELECT
-        TeeId AS teeId,
-        TeeName AS teeName,
-        Gender AS gender,
-        TeeSetSide AS teeSetSide,
-        IsDefault AS isDefault,
-        CourseRating18 AS courseRating18,
-        SlopeRating18 AS slopeRating18,
-        Par18 AS par18,
-        Yardage18 AS yardage18,
-        CourseRatingF9 AS courseRatingF9,
-        SlopeRatingF9 AS slopeRatingF9,
-        ParF9 AS parF9,
-        YardageF9 AS yardageF9,
-        CourseRatingB9 AS courseRatingB9,
-        SlopeRatingB9 AS slopeRatingB9,
-        ParB9 AS parB9,
-        YardageB9 AS yardageB9
-     FROM dbo.GHIN_Tees
-     WHERE CourseId = @courseId
-     ORDER BY TeeId;
+        t.TeeId AS teeId,
+        ct.TeeName AS teeName,
+        t.Gender AS gender,
+        t.TeeSetSide AS teeSetSide,
+        ct.IsDefault AS isDefault,
+        ct.CourseRating18 AS courseRating18,
+        ct.SlopeRating18 AS slopeRating18,
+        t.Par18 AS par18,
+        t.Yardage18 AS yardage18,
+        ct.CourseRatingF9 AS courseRatingF9,
+        ct.SlopeRatingF9 AS slopeRatingF9,
+        t.ParF9 AS parF9,
+        t.YardageF9 AS yardageF9,
+        ct.CourseRatingB9 AS courseRatingB9,
+        ct.SlopeRatingB9 AS slopeRatingB9,
+        t.ParB9 AS parB9,
+        t.YardageB9 AS yardageB9
+     FROM dbo.GHIN_CourseTees ct
+       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = ct.TeeId
+     WHERE ct.CourseId = @courseId
+     ORDER BY t.TeeId;
 
      SELECT
-        t.TeeId AS teeId,
+        ct.TeeId AS teeId,
         h.HoleNumber AS holeNumber,
         h.Par AS par,
         h.Handicap AS handicap,
         h.Yardage AS yardage
      FROM dbo.GHIN_Holes h
-       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
-       WHERE t.CourseId = @courseId
-     ORDER BY t.TeeId, h.HoleNumber;`;
+       INNER JOIN dbo.GHIN_CourseTees ct ON ct.TeeId = h.TeeId
+     WHERE ct.CourseId = @courseId
+     ORDER BY ct.TeeId, h.HoleNumber;`;
 
 async function readCourseCacheSnapshot(courseId) {
   const sql = database.sql;
@@ -1833,7 +1799,7 @@ async function courseHasCachedRatings(courseId) {
   if (!id) return false;
   const rows = await database.query(
     `SELECT TOP 1 1 AS hasRatings
-     FROM dbo.GHIN_Tees
+     FROM dbo.GHIN_CourseTees
      WHERE CourseId = @courseId
        AND (
          CourseRating18 IS NOT NULL
@@ -1865,7 +1831,7 @@ function toStoredSlope(value) {
 
 /**
  * The rating values a ratings-only load writes for each tee, one row per distinct tee id,
- * exactly as dbo.GHIN_Tees stores them. `course` is usaGhinApiClient.getCourse's result:
+ * exactly as dbo.GHIN_CourseTees stores them. `course` is usaGhinApiClient.getCourse's result:
  * getCourse returns null unless USGA sent a TeeSets array, and every normalized tee has a teeId.
  */
 function ratingsOnlyTeeRows(course) {
@@ -1959,7 +1925,7 @@ async function upsertCacheDbRatingsOnly(course, options = {}) {
            CourseRatingB9 = v.CourseRatingB9,
            SlopeRatingB9 = v.SlopeRatingB9,
            UpdatedAt = GETUTCDATE()
-       FROM dbo.GHIN_Tees t
+       FROM dbo.GHIN_CourseTees t
        INNER JOIN (VALUES ${valueRows.join(',\n         ')})
          AS v (TeeId, CourseRating18, SlopeRating18, CourseRatingF9, SlopeRatingF9, CourseRatingB9, SlopeRatingB9)
          ON t.TeeId = v.TeeId
@@ -2250,7 +2216,7 @@ async function nullCacheDbTeeRatings(courseId) {
 
   return runWithCacheWriteRetry(id, async () => {
     const rows = await database.query(
-      `UPDATE dbo.GHIN_Tees
+      `UPDATE dbo.GHIN_CourseTees
        SET CourseRating18 = NULL,
            SlopeRating18 = NULL,
            CourseRatingF9 = NULL,
@@ -2488,7 +2454,7 @@ async function purgeExpiredCacheCourses(options = {}) {
        AND UPPER(LTRIM(RTRIM(ISNULL(c.CacheSource, '')))) <> 'MANUAL'
        AND EXISTS (
          SELECT 1
-         FROM dbo.GHIN_Tees t
+         FROM dbo.GHIN_CourseTees t
          WHERE t.CourseId = c.CourseId
            AND (
              t.CourseRating18 IS NOT NULL

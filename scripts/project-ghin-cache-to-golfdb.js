@@ -429,39 +429,40 @@ async function loadCacheProjectionData(courseIds) {
     ),
     database.query(
       `SELECT
-          CourseId AS courseId,
-          TeeId AS teeId,
-          TeeName AS teeName,
-          TeeSetSide AS teeSetSide,
-          Gender AS gender,
-          IsDefault AS isDefault,
-          CourseRating18 AS courseRating18,
-          SlopeRating18 AS slopeRating18,
-          Par18 AS par18,
-          Yardage18 AS yardage18,
-          CourseRatingF9 AS courseRatingF9,
-          SlopeRatingF9 AS slopeRatingF9,
-          ParF9 AS parF9,
-          YardageF9 AS yardageF9,
-          CourseRatingB9 AS courseRatingB9,
-          SlopeRatingB9 AS slopeRatingB9,
-          ParB9 AS parB9,
-          YardageB9 AS yardageB9
-       FROM dbo.GHIN_Tees
-       WHERE CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+          ct.CourseId AS courseId,
+          t.TeeId AS teeId,
+          ct.TeeName AS teeName,
+          t.TeeSetSide AS teeSetSide,
+          t.Gender AS gender,
+          ct.IsDefault AS isDefault,
+          ct.CourseRating18 AS courseRating18,
+          ct.SlopeRating18 AS slopeRating18,
+          t.Par18 AS par18,
+          t.Yardage18 AS yardage18,
+          ct.CourseRatingF9 AS courseRatingF9,
+          ct.SlopeRatingF9 AS slopeRatingF9,
+          t.ParF9 AS parF9,
+          t.YardageF9 AS yardageF9,
+          ct.CourseRatingB9 AS courseRatingB9,
+          ct.SlopeRatingB9 AS slopeRatingB9,
+          t.ParB9 AS parB9,
+          t.YardageB9 AS yardageB9
+       FROM dbo.GHIN_CourseTees ct
+       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = ct.TeeId
+       WHERE ct.CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
       params
     ),
     database.query(
       `SELECT
-          t.CourseId AS courseId,
-          t.TeeId AS teeId,
+          ct.CourseId AS courseId,
+          ct.TeeId AS teeId,
           h.HoleNumber AS holeNumber,
           h.Par AS par,
           h.Handicap AS handicap,
           h.Yardage AS yardage
        FROM dbo.GHIN_Holes h
-       INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
-       WHERE t.CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
+       INNER JOIN dbo.GHIN_CourseTees ct ON ct.TeeId = h.TeeId
+       WHERE ct.CourseId IN (SELECT [value] FROM OPENJSON(@idsJson))`,
       params
     )
   ]);

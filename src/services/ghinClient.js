@@ -165,27 +165,28 @@ async function getCourse(ghinCourseId) {
     // Get tees for this course
     const tees = await db.query(
       `SELECT
-          TeeId AS teeId,
-          TeeName AS teeName,
-          Gender AS gender,
-          IsDefault AS isDefault,
-          CourseRating18 AS courseRating,
-          SlopeRating18 AS slope,
-          Par18 AS par,
-          Yardage18 AS yardage,
-          TeeSetSide AS teeSetSide,
-          CourseRatingF9 AS courseRatingF9,
-          SlopeRatingF9 AS slopeRatingF9,
-          ParF9 AS parF9,
-          YardageF9 AS yardageF9,
-          CourseRatingB9 AS courseRatingB9,
-          SlopeRatingB9 AS slopeRatingB9,
-          ParB9 AS parB9,
-          YardageB9 AS yardageB9,
-          UpdatedAt AS updatedAt
-       FROM dbo.GHIN_Tees
-       WHERE CourseId = @courseId
-       ORDER BY gender, teeName`,
+          t.TeeId AS teeId,
+          ct.TeeName AS teeName,
+          t.Gender AS gender,
+          ct.IsDefault AS isDefault,
+          ct.CourseRating18 AS courseRating,
+          ct.SlopeRating18 AS slope,
+          t.Par18 AS par,
+          t.Yardage18 AS yardage,
+          t.TeeSetSide AS teeSetSide,
+          ct.CourseRatingF9 AS courseRatingF9,
+          ct.SlopeRatingF9 AS slopeRatingF9,
+          t.ParF9 AS parF9,
+          t.YardageF9 AS yardageF9,
+          ct.CourseRatingB9 AS courseRatingB9,
+          ct.SlopeRatingB9 AS slopeRatingB9,
+          t.ParB9 AS parB9,
+          t.YardageB9 AS yardageB9,
+          ct.UpdatedAt AS updatedAt
+       FROM dbo.GHIN_CourseTees ct
+         INNER JOIN dbo.GHIN_Tees t ON t.TeeId = ct.TeeId
+       WHERE ct.CourseId = @courseId
+       ORDER BY t.Gender, ct.TeeName`,
       { courseId: { type: db.sql.VarChar, value: ghinCourseId } }
     );
     

@@ -1,5 +1,5 @@
 /**
- * Re-fetch a course from the live USGA API and update GHIN_Tees with F9/B9 data.
+ * Re-fetch a course from the live USGA API and update GHIN_Tees and GHIN_CourseTees with F9/B9 data.
  * Usage: node scripts/refresh-course-cache.js <ghinCourseId>
  * Example: node scripts/refresh-course-cache.js 1385
  */
@@ -75,7 +75,8 @@ async function run() {
   for (const tee of course.tees) {
     const existing = await pool.request()
       .input('teeId', sql.VarChar, tee.teeId)
-      .query(`SELECT teeId FROM GHIN_Tees WHERE teeId = @teeId`);
+      .input('courseId', sql.VarChar, String(course.courseId))
+      .query(`SELECT TeeId FROM dbo.GHIN_CourseTees WHERE CourseId = @courseId AND TeeId = @teeId`);
 
     if (existing.recordset.length === 0) {
       console.log(`  SKIP (not in cache): ${tee.teeName} (${tee.gender}) teeId=${tee.teeId}`);
@@ -84,6 +85,7 @@ async function run() {
 
     await pool.request()
       .input('teeId',          sql.VarChar,      tee.teeId)
+      .input('courseId',       sql.VarChar,      String(course.courseId))
       .input('teeSetSide',     sql.VarChar,      tee.teeSetSide      ?? 'All18')
       .input('courseRatingF9', sql.Decimal(4,1), tee.courseRatingF9  ?? null)
       .input('slopeRatingF9',  sql.Int,          tee.slopeRatingF9   ?? null)
@@ -94,18 +96,22 @@ async function run() {
       .input('parB9',          sql.Int,          tee.parB9           ?? null)
       .input('yardageB9',      sql.Int,          tee.yardageB9       ?? null)
       .query(`
-        UPDATE GHIN_Tees SET
-          teeSetSide     = @teeSetSide,
-          courseRatingF9 = @courseRatingF9,
-          slopeRatingF9  = @slopeRatingF9,
-          parF9          = @parF9,
-          yardageF9      = @yardageF9,
-          courseRatingB9 = @courseRatingB9,
-          slopeRatingB9  = @slopeRatingB9,
-          parB9          = @parB9,
-          yardageB9      = @yardageB9,
-          updatedAt      = GETUTCDATE()
-        WHERE teeId = @teeId
+        UPDATE dbo.GHIN_Tees SET
+          TeeSetSide = @teeSetSide,
+          ParF9      = @parF9,
+          YardageF9  = @yardageF9,
+          ParB9      = @parB9,
+          YardageB9  = @yardageB9,
+          UpdatedAt  = GETUTCDATE()
+        WHERE TeeId = @teeId;
+
+        UPDATE dbo.GHIN_CourseTees SET
+          CourseRatingF9 = @courseRatingF9,
+          SlopeRatingF9  = @slopeRatingF9,
+          CourseRatingB9 = @courseRatingB9,
+          SlopeRatingB9  = @slopeRatingB9,
+          UpdatedAt      = GETUTCDATE()
+        WHERE CourseId = @courseId AND TeeId = @teeId;
       `);
 
     const f9 = tee.courseRatingF9 != null ? `F9=${tee.courseRatingF9}/${tee.slopeRatingF9}` : 'F9=null';

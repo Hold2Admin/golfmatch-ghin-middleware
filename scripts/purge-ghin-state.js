@@ -175,13 +175,13 @@ async function getCacheCounts(states, excludeCourseIds = []) {
         WHERE State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS courseCount,
        (SELECT COUNT(1)
-        FROM dbo.GHIN_Tees t
+        FROM dbo.GHIN_CourseTees t
         INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
         WHERE c.State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS teeCount,
        (SELECT COUNT(1)
         FROM dbo.GHIN_Holes h
-        INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
+        INNER JOIN dbo.GHIN_CourseTees t ON t.TeeId = h.TeeId
         INNER JOIN dbo.GHIN_Courses c ON c.CourseId = t.CourseId
         WHERE c.State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson))) AS holeCount`,
@@ -348,6 +348,22 @@ async function purgeCacheState(states, excludeCourseIds = []) {
       .input('statesJson', dbSql.NVarChar(dbSql.MAX), JSON.stringify(states))
       .input('excludeIdsJson', dbSql.NVarChar(dbSql.MAX), JSON.stringify(excludeCourseIds))
       .query(`
+        CREATE TABLE #RemovedLinkTees (TeeId VARCHAR(50) NOT NULL);
+
+        DELETE ct
+        OUTPUT deleted.TeeId INTO #RemovedLinkTees (TeeId)
+        FROM dbo.GHIN_CourseTees ct
+        INNER JOIN dbo.GHIN_Courses c ON c.CourseId = ct.CourseId
+        WHERE c.State IN (SELECT [value] FROM OPENJSON(@statesJson))
+          AND c.CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));
+
+        DELETE t
+        FROM dbo.GHIN_Tees t
+        INNER JOIN (SELECT DISTINCT TeeId FROM #RemovedLinkTees) removed ON removed.TeeId = t.TeeId
+        WHERE NOT EXISTS (
+          SELECT 1 FROM dbo.GHIN_CourseTees remaining WHERE remaining.TeeId = t.TeeId
+        );
+
         DELETE FROM dbo.GHIN_Courses
         WHERE State IN (SELECT [value] FROM OPENJSON(@statesJson))
           AND CourseId NOT IN (SELECT [value] FROM OPENJSON(@excludeIdsJson));

@@ -1,7 +1,7 @@
 /**
  * Seed a GHIN course from the live USGA API into the cache database.
  * Fetches full course data (tees + holes) and upserts into GHIN_Courses,
- * GHIN_Tees, and GHIN_Holes. Safe to re-run — existing data for the course
+ * GHIN_Tees, GHIN_CourseTees and GHIN_Holes. Safe to re-run — existing data for the course
  * is replaced atomically.
  *
  * Usage: node scripts/seed-ghin-course.js <ghinCourseId>
@@ -257,13 +257,32 @@ async function run() {
           (@courseId, @facilityId, @facilityName, @courseName, @shortCourseName, @city, @state, @country, @cachedAt, @expiresAt, @cacheSource, @lastPayloadHash, @lastTeeStructureHash);
       `);
 
-    // ── 2. Delete existing tees (cascades to GHIN_Holes) ─────────────────
+    // ── 2. Drop this course's tee links; delete tees no other course links to ──
+    // USGA lists an 18-hole combo tee under both of its 9-hole courses, so a tee can be
+    // linked to more than one course. Name, default flag and ratings live on the link.
     const del = await transaction.request()
       .input('courseId', sql.VarChar(50), course.courseId)
-      .query(`DELETE FROM GHIN_Tees WHERE courseId = @courseId`);
-    const deletedTees = del.rowsAffected[0] ?? 0;
+      .query(`
+        CREATE TABLE #RemovedLinkTees (TeeId VARCHAR(50) NOT NULL PRIMARY KEY);
 
-    // ── 3. Insert tees ────────────────────────────────────────────────────
+        DELETE FROM dbo.GHIN_CourseTees
+        OUTPUT deleted.TeeId INTO #RemovedLinkTees (TeeId)
+        WHERE CourseId = @courseId;
+
+        DECLARE @removedLinks INT = @@ROWCOUNT;
+
+        DELETE t
+        FROM dbo.GHIN_Tees t
+        INNER JOIN #RemovedLinkTees removed ON removed.TeeId = t.TeeId
+        WHERE NOT EXISTS (
+          SELECT 1 FROM dbo.GHIN_CourseTees remaining WHERE remaining.TeeId = t.TeeId
+        );
+
+        SELECT @removedLinks AS removedLinks;
+      `);
+    const deletedTees = Number(del.recordset[0].removedLinks);
+
+    // ── 3. Upsert tees and insert this course's links ─────────────────────
     let teeCount  = 0;
     let holeCount = 0;
 
@@ -288,16 +307,36 @@ async function run() {
         .input('parB9',           sql.Int,           tee.parB9           != null ? Math.round(tee.parB9)          : null)
         .input('yardageB9',       sql.Int,           tee.yardageB9       != null ? Math.round(tee.yardageB9)      : null)
         .query(`
-          INSERT INTO GHIN_Tees
-            (teeId, courseId, teeName, teeSetSide, gender, isDefault,
-             courseRating18, slopeRating18, par18, yardage18,
-             courseRatingF9, slopeRatingF9, parF9, yardageF9,
-             courseRatingB9, slopeRatingB9, parB9, yardageB9)
+          MERGE dbo.GHIN_Tees WITH (HOLDLOCK) AS target
+          USING (VALUES (@teeId)) AS src(TeeId)
+            ON target.TeeId = src.TeeId
+          WHEN MATCHED THEN UPDATE SET
+            TeeSetSide = @teeSetSide,
+            Gender     = @gender,
+            Par18      = @par18,
+            Yardage18  = @yardage18,
+            ParF9      = @parF9,
+            YardageF9  = @yardageF9,
+            ParB9      = @parB9,
+            YardageB9  = @yardageB9,
+            UpdatedAt  = GETUTCDATE()
+          WHEN NOT MATCHED THEN INSERT
+            (TeeId, TeeSetSide, Gender, Par18, Yardage18, ParF9, YardageF9, ParB9, YardageB9)
           VALUES
-            (@teeId, @courseId, @teeName, @teeSetSide, @gender, @isDefault,
-             @courseRating18, @slopeRating18, @par18, @yardage18,
-             @courseRatingF9, @slopeRatingF9, @parF9, @yardageF9,
-             @courseRatingB9, @slopeRatingB9, @parB9, @yardageB9)
+            (@teeId, @teeSetSide, @gender, @par18, @yardage18, @parF9, @yardageF9, @parB9, @yardageB9);
+
+          INSERT INTO dbo.GHIN_CourseTees
+            (CourseId, TeeId, TeeName, IsDefault,
+             CourseRating18, SlopeRating18,
+             CourseRatingF9, SlopeRatingF9,
+             CourseRatingB9, SlopeRatingB9)
+          VALUES
+            (@courseId, @teeId, @teeName, @isDefault,
+             @courseRating18, @slopeRating18,
+             @courseRatingF9, @slopeRatingF9,
+             @courseRatingB9, @slopeRatingB9);
+
+          DELETE FROM dbo.GHIN_Holes WHERE TeeId = @teeId;
         `);
       teeCount++;
 
@@ -310,7 +349,7 @@ async function run() {
           .input('handicap',   sql.Int,         hole.handicap)
           .input('yardage',    sql.Int,         hole.yardage ?? 0)
           .query(`
-            INSERT INTO GHIN_Holes (teeId, holeNumber, par, handicap, yardage)
+            INSERT INTO dbo.GHIN_Holes (TeeId, HoleNumber, Par, Handicap, Yardage)
             VALUES (@teeId, @holeNumber, @par, @handicap, @yardage)
           `);
         holeCount++;

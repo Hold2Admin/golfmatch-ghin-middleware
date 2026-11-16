@@ -65,12 +65,12 @@ async function getCourseSummary(pool, courseId) {
         c.FacilityName,
         c.State,
         c.UpdatedAt,
-        (SELECT COUNT(1) FROM dbo.GHIN_Tees t WHERE t.CourseId = c.CourseId) AS TeeCount,
+        (SELECT COUNT(1) FROM dbo.GHIN_CourseTees ct WHERE ct.CourseId = c.CourseId) AS TeeCount,
         (
           SELECT COUNT(1)
           FROM dbo.GHIN_Holes h
-          INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
-          WHERE t.CourseId = c.CourseId
+          INNER JOIN dbo.GHIN_CourseTees ct ON ct.TeeId = h.TeeId
+          WHERE ct.CourseId = c.CourseId
         ) AS HoleCount
       FROM dbo.GHIN_Courses c
       WHERE c.CourseId = @courseId;
@@ -84,24 +84,33 @@ async function purgeCourse(pool, courseId) {
   await transaction.begin();
 
   try {
-    const deleteHolesResult = await new sql.Request(transaction)
-      .input('courseId', sql.VarChar(50), courseId)
-      .query(`
-        DELETE h
-        FROM dbo.GHIN_Holes h
-        INNER JOIN dbo.GHIN_Tees t ON t.TeeId = h.TeeId
-        WHERE t.CourseId = @courseId;
-
-        SELECT @@ROWCOUNT AS deletedHoles;
-      `);
-
+    // A tee shared with another course (18-hole combo under both 9-hole courses) keeps its
+    // tee and holes; only this course's link goes. Tees no other course links to are deleted.
     const deleteTeesResult = await new sql.Request(transaction)
       .input('courseId', sql.VarChar(50), courseId)
       .query(`
-        DELETE FROM dbo.GHIN_Tees
+        CREATE TABLE #RemovedLinkTees (TeeId VARCHAR(50) NOT NULL PRIMARY KEY);
+
+        DELETE FROM dbo.GHIN_CourseTees
+        OUTPUT deleted.TeeId INTO #RemovedLinkTees (TeeId)
         WHERE CourseId = @courseId;
 
-        SELECT @@ROWCOUNT AS deletedTees;
+        DELETE FROM #RemovedLinkTees
+        WHERE EXISTS (
+          SELECT 1 FROM dbo.GHIN_CourseTees remaining WHERE remaining.TeeId = #RemovedLinkTees.TeeId
+        );
+
+        DELETE h
+        FROM dbo.GHIN_Holes h
+        INNER JOIN #RemovedLinkTees removed ON removed.TeeId = h.TeeId;
+        DECLARE @deletedHoles INT = @@ROWCOUNT;
+
+        DELETE t
+        FROM dbo.GHIN_Tees t
+        INNER JOIN #RemovedLinkTees removed ON removed.TeeId = t.TeeId;
+        DECLARE @deletedTees INT = @@ROWCOUNT;
+
+        SELECT @deletedHoles AS deletedHoles, @deletedTees AS deletedTees;
       `);
 
     const deleteCourseResult = await new sql.Request(transaction)
@@ -116,7 +125,7 @@ async function purgeCourse(pool, courseId) {
     await transaction.commit();
 
     return {
-      deletedHoles: Number(deleteHolesResult.recordset?.[0]?.deletedHoles || 0),
+      deletedHoles: Number(deleteTeesResult.recordset[0].deletedHoles),
       deletedTees: Number(deleteTeesResult.recordset?.[0]?.deletedTees || 0),
       deletedCourses: Number(deleteCourseResult.recordset?.[0]?.deletedCourses || 0),
     };
