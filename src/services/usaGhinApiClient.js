@@ -78,7 +78,10 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = getRequestTimeout
     const isAbort = error && error.name === 'AbortError';
     trackDependency(parsedHost, parsedPath, Date.now() - started, false, isAbort ? 408 : 0);
     if (isAbort) {
-      throw new Error(`USGA API timeout after ${timeoutMs}ms for ${options.method || 'GET'} ${url}`);
+      throw Object.assign(
+        new Error(`USGA API timeout after ${timeoutMs}ms for ${url}`),
+        { code: 'USGA_API_TIMEOUT' }
+      );
     }
     throw error;
   } finally {

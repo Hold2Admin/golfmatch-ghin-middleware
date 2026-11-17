@@ -336,6 +336,31 @@ router.post(
 );
 
 /**
+ * A failed golfer access request or revoke, answered by kind so the API never reads USGA's text:
+ * USGA turned the call down (its 4xx; 422 here so 401/403 keep meaning our API key, USGA's status in usgaStatus),
+ * USGA did not answer in time (504), or anything else (502).
+ */
+const GOLFER_ACCESS_ERROR_RESPONSES = Object.freeze({
+  USGA_API_REQUEST_REJECTED: { status: 422, retryable: false },
+  USGA_API_TIMEOUT: { status: 504, retryable: true },
+});
+const GOLFER_ACCESS_OTHER_ERROR = Object.freeze({ code: 'GHIN_API_ERROR', status: 502, retryable: false });
+
+function sendGolferAccessError(res, error) {
+  const known = Object.prototype.hasOwnProperty.call(GOLFER_ACCESS_ERROR_RESPONSES, error.code);
+  const response = known ? GOLFER_ACCESS_ERROR_RESPONSES[error.code] : GOLFER_ACCESS_OTHER_ERROR;
+  const code = known ? error.code : GOLFER_ACCESS_OTHER_ERROR.code;
+  return res.status(response.status).json({
+    error: {
+      code,
+      message: error.message,
+      usgaStatus: Number.isInteger(error.status) ? error.status : null,
+      retryable: response.retryable
+    }
+  });
+}
+
+/**
  * POST /api/v1/players/:ghinNumber/request-access
  * Request golfer product access for an acknowledged user.
  */
@@ -387,13 +412,7 @@ router.post(
       });
     } catch (error) {
       logger.error('Error requesting golfer product access', { ghinNumber, error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: error.message || 'Failed to request golfer product access',
-          retryable: false
-        }
-      });
+      sendGolferAccessError(res, error);
     }
   }
 );
@@ -510,13 +529,7 @@ router.delete(
       });
     } catch (error) {
       logger.error('Error revoking golfer product access', { ghinNumber, error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: error.message || 'Failed to revoke golfer product access',
-          retryable: false
-        }
-      });
+      sendGolferAccessError(res, error);
     }
   }
 );
