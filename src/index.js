@@ -174,6 +174,7 @@ const { rateLimiter } = safeRequire('./middleware/rate-limit');
 const database = safeRequire('./services/database');
 const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
+const { readAllowedOrigins } = require('./config/allowedOrigins');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
 const { startRatingsExpiryScheduler } = safeRequire('./services/ratingsExpiryScheduler');
 const courseCachePolicy = safeRequire('./services/courseCachePolicy');
@@ -284,18 +285,10 @@ function isGeolocationCourseSearchRequest(req) {
 
 app.use(helmet()); // Security headers
 
-// CORS configuration - only allow golfmatch-api and local dev
+// CORS: only the configured origins (src/config/allowedOrigins.js)
+const allowedOrigins = readAllowedOrigins();
 const corsOptions = {
   origin: (origin, callback) => {
-    const allowedOrigins = [
-      'https://golfmatch-api.azurewebsites.net',
-      'https://api.golfmatch.claytoncobb.com',
-      'https://golfmatch-web.azurewebsites.net',
-      'http://localhost:5000',
-      'http://localhost:5001',
-      'http://localhost:5173'
-    ];
-    
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {

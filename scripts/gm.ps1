@@ -44,8 +44,11 @@ function gmx {
     [string]$Method = 'GET',
     [string]$Body,
     [switch]$Pretty,
-    [string]$Base = 'https://golfmatch-ghin-middleware.azurewebsites.net'
+    [string]$Base = $env:GHIN_MIDDLEWARE_BASE_URL
   )
+  if (-not $Base) {
+    throw 'Set GHIN_MIDDLEWARE_BASE_URL (or pass -Base) to the middleware base URL.'
+  }
   if (-not $env:GHIN_MW_API_KEY) {
     Write-Host 'GHIN_MW_API_KEY is not set. Running Set-GmKey to fetch from Key Vault...'
     Set-GmKey
@@ -91,7 +94,10 @@ function gm-local {
     [string]$Body,
     [switch]$Pretty
   )
-  gmx -Path $Path -Method $Method -Body $Body -Pretty:$Pretty -Base 'http://localhost:5001'
+  if (-not $env:GHIN_MIDDLEWARE_LOCAL_BASE_URL) {
+    throw 'Set GHIN_MIDDLEWARE_LOCAL_BASE_URL to the local middleware base URL.'
+  }
+  gmx -Path $Path -Method $Method -Body $Body -Pretty:$Pretty -Base $env:GHIN_MIDDLEWARE_LOCAL_BASE_URL
 }
 
 # ---------------------------------------------
