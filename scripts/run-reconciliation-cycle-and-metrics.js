@@ -9,7 +9,7 @@
 
 const { loadSecrets } = require('../src/config/secrets');
 
-async function callJson(url, options = {}, timeoutMs = 300000) {
+async function callJson(url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -37,7 +37,10 @@ async function callJson(url, options = {}, timeoutMs = 300000) {
 
 async function run() {
   const courseIds = process.argv.slice(2).map((x) => String(x).trim()).filter(Boolean);
-  const timeoutMs = Number(process.env.GHIN_SCRIPT_HTTP_TIMEOUT_MS || 300000);
+  const timeoutMs = Number(process.env.GHIN_SCRIPT_HTTP_TIMEOUT_MS);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('GHIN_SCRIPT_HTTP_TIMEOUT_MS is required: milliseconds each middleware call may take.');
+  }
 
   console.log('Loading secrets from Key Vault...');
   const secrets = await loadSecrets();

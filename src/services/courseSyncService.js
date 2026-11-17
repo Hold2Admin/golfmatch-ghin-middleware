@@ -140,6 +140,15 @@ function acquireMirrorCallbackSlot() {
   });
 }
 
+/** GolfDB's mirror callback URL from Key Vault; throws when it isn't loaded. (FP-126) */
+function requireMirrorCallbackUrl() {
+  const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL;
+  if (!callbackUrl) {
+    throw new Error('GHIN_IMPORT_CALLBACK_URL is required for the GolfDB mirror callback.');
+  }
+  return callbackUrl;
+}
+
 async function runWithMirrorCallbackSlot(fn) {
   const waitStarted = Date.now();
   const release = await acquireMirrorCallbackSlot();
@@ -156,13 +165,7 @@ async function runWithMirrorCallbackSlot(fn) {
   } finally {
     release();
     const callMs = Date.now() - callStarted;
-    let host = 'golfdb-callback';
-    let path = 'mirror-callback';
-    try {
-      const u = new URL(response?.url || process.env.GHIN_IMPORT_CALLBACK_URL || '');
-      host = u.host;
-      path = u.pathname;
-    } catch (_) { /* keep defaults */ }
+    const { host, pathname: path } = new URL(requireMirrorCallbackUrl());
     const ok = !error && Boolean(response?.ok);
     trackDependency(host, `POST ${path}`, callMs, ok, error ? 0 : (response?.status || 0), {
       type: 'HTTP',
@@ -1305,12 +1308,9 @@ async function upsertCourseHeaderToCache(course, hashes = {}, options = {}) {
 }
 
 async function syncMirrorForCourse(course) {
-  const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL;
+  const callbackUrl = requireMirrorCallbackUrl();
   const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
 
-  if (!callbackUrl) {
-    throw new Error('GHIN_IMPORT_CALLBACK_URL is required for mirror sync.');
-  }
   if (!callbackApiKey) {
     throw new Error('GHIN_MIDDLEWARE_API_KEY is required for mirror callback auth.');
   }
@@ -1954,13 +1954,10 @@ async function upsertCacheDbRatingsOnly(course, options = {}) {
 }
 
 async function mirrorRatingsOnlyToGolfDb(course) {
-  const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL;
+  const callbackUrl = requireMirrorCallbackUrl();
   const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
   const id = String(course?.courseId || '').trim();
 
-  if (!callbackUrl) {
-    throw new Error('GHIN_IMPORT_CALLBACK_URL is required to mirror ratings-only.');
-  }
   if (!callbackApiKey) {
     throw new Error('GHIN_MIDDLEWARE_API_KEY is required to mirror ratings-only.');
   }
