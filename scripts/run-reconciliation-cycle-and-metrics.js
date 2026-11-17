@@ -44,7 +44,10 @@ async function run() {
   Object.assign(process.env, secrets);
   console.log('Secrets loaded from Key Vault.');
 
-  const middlewareBase = process.env.GHIN_MIDDLEWARE_BASE_URL || 'http://localhost:5001';
+  const middlewareBase = process.env.GHIN_MIDDLEWARE_BASE_URL;
+  if (!middlewareBase) {
+    throw new Error('GHIN_MIDDLEWARE_BASE_URL is required.');
+  }
   const apiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
 
   if (!apiKey) {

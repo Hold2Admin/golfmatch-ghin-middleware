@@ -34,7 +34,10 @@ async function run() {
   const secrets = await loadSecrets();
   Object.assign(process.env, secrets);
 
-  const middlewareBase = process.env.GHIN_MIDDLEWARE_BASE_URL || 'http://localhost:5001';
+  const middlewareBase = process.env.GHIN_MIDDLEWARE_BASE_URL;
+  if (!middlewareBase) {
+    throw new Error('GHIN_MIDDLEWARE_BASE_URL is required.');
+  }
   const apiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
 
   if (!apiKey) {

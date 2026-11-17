@@ -364,11 +364,15 @@ async function run() {
     console.log(`   ${teeCount} tee set(s), ${holeCount} hole(s) written`);
     console.log(`   Cache expires: ${expiry.toISOString().slice(0, 10)}`);
 
-    const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL || 'http://localhost:5000/api/internal/ghin-import-callback';
-    const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY || secrets.GHIN_MIDDLEWARE_API_KEY;
+    // One source for the callback target and its key: Key Vault (FP-126); no local URL, no env override.
+    const callbackUrl = secrets.GHIN_IMPORT_CALLBACK_URL;
+    const callbackApiKey = secrets.GHIN_MIDDLEWARE_API_KEY;
 
+    if (!callbackUrl) {
+      throw new Error('GHIN_IMPORT_CALLBACK_URL not found in Key Vault. Cannot sync mirror callback.');
+    }
     if (!callbackApiKey) {
-      throw new Error('GHIN_MIDDLEWARE_API_KEY not found. Cannot sync mirror callback.');
+      throw new Error('GHIN_MIDDLEWARE_API_KEY not found in Key Vault. Cannot sync mirror callback.');
     }
 
     console.log(`\nSyncing runtime mirror via callback: ${callbackUrl}`);
