@@ -175,6 +175,7 @@ const database = safeRequire('./services/database');
 const redis = safeRequire('./services/redis');
 const { loadSecrets } = safeRequire('./config/secrets');
 const { readAllowedOrigins } = require('./config/allowedOrigins');
+const { sendErrorReply, readCaughtErrorReply } = require('./utils/errorReplies');
 const { startReconciliationScheduler } = safeRequire('./services/reconciliationScheduler');
 const { startRatingsExpiryScheduler } = safeRequire('./services/ratingsExpiryScheduler');
 const courseCachePolicy = safeRequire('./services/courseCachePolicy');
@@ -366,23 +367,23 @@ app.get('/', (req, res) => {
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    error: {
-      code: 'NOT_FOUND',
-      message: `Endpoint ${req.method} ${req.path} not found`
-    }
+  sendErrorReply(res, 404, {
+    code: 'NOT_FOUND',
+    message: `Endpoint ${req.method} ${req.path} not found`
   });
 });
 
 // Global error handler
 app.use((err, req, res, next) => {
   logger.error('Unhandled error', { error: err.message, stack: err.stack });
-  res.status(err.status || 500).json({
-    error: {
-      code: err.code || 'INTERNAL_ERROR',
-      message: err.message || 'An unexpected error occurred',
-      ...(config.env === 'development' && { stack: err.stack })
-    }
+  const reply = readCaughtErrorReply(err, {
+    status: 500,
+    code: 'INTERNAL_ERROR',
+    message: 'An unexpected error occurred'
+  });
+  sendErrorReply(res, reply.status, {
+    ...reply.error,
+    ...(config.env === 'development' && { stack: err.stack })
   });
 });
 

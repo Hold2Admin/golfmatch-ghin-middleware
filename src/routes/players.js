@@ -6,6 +6,7 @@ const express = require('express');
 const router = express.Router();
 const { body, param, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply, readCaughtErrorMessage, sendCaughtErrorReply } = require('../utils/errorReplies');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinPlayer } = require('../services/transformers/playerTransformer');
 const config = require('../config');
@@ -35,12 +36,10 @@ router.get('/access-list', async (req, res) => {
     return res.json({ accesses, fetchedAt: new Date().toISOString() });
   } catch (error) {
     logger.error('Error listing golfer product accesses', { error: error.message });
-    return res.status(502).json({
-      error: {
-        code: 'GHIN_API_ERROR',
-        message: error.message || 'Failed to list golfer product accesses',
-        retryable: true
-      }
+    return sendErrorReply(res, 502, {
+      code: 'GHIN_API_ERROR',
+      message: readCaughtErrorMessage(error, 'Failed to list golfer product accesses'),
+      retryable: true
     });
   }
 });
@@ -57,12 +56,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid GHIN number format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid GHIN number format',
+        details: errors.array()
       });
     }
 
@@ -78,12 +75,10 @@ router.get(
       const ghinPlayer = await ghinClient.getPlayer(ghinNumber);
       
       if (!ghinPlayer) {
-        return res.status(404).json({
-          error: {
-            code: 'GHIN_PLAYER_NOT_FOUND',
-            message: `Player with GHIN number ${ghinNumber} not found`,
-            retryable: false
-          }
+        return sendErrorReply(res, 404, {
+          code: 'GHIN_PLAYER_NOT_FOUND',
+          message: `Player with GHIN number ${ghinNumber} not found`,
+          retryable: false
         });
       }
 
@@ -95,12 +90,10 @@ router.get(
       res.json(normalizedPlayer);
     } catch (error) {
       logger.error('Error fetching player', { ghinNumber, error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: 'Failed to fetch player from GHIN API',
-          retryable: true
-        }
+      sendErrorReply(res, 502, {
+        code: 'GHIN_API_ERROR',
+        message: 'Failed to fetch player from GHIN API',
+        retryable: true
       });
     }
   }
@@ -122,12 +115,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid request body',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid request body',
+        details: errors.array()
       });
     }
 
@@ -176,12 +167,10 @@ router.post(
       });
     } catch (error) {
       logger.error('Batch fetch error', { error: error.message });
-      res.status(500).json({
-        error: {
-          code: 'BATCH_FETCH_ERROR',
-          message: 'Failed to fetch players',
-          retryable: true
-        }
+      sendErrorReply(res, 500, {
+        code: 'BATCH_FETCH_ERROR',
+        message: 'Failed to fetch players',
+        retryable: true
       });
     }
   }
@@ -208,12 +197,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid request body',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid request body',
+        details: errors.array()
       });
     }
 
@@ -249,12 +236,10 @@ router.post(
       res.json({ results });
     } catch (error) {
       logger.error('Batch handicap index as-of error', { error: error.message });
-      res.status(500).json({
-        error: {
-          code: 'BATCH_FETCH_ERROR',
-          message: 'Failed to resolve handicap indexes',
-          retryable: true
-        }
+      sendErrorReply(res, 500, {
+        code: 'BATCH_FETCH_ERROR',
+        message: 'Failed to resolve handicap indexes',
+        retryable: true
       });
     }
   }
@@ -280,12 +265,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid search parameters',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid search parameters',
+        details: errors.array()
       });
     }
 
@@ -293,11 +276,9 @@ router.post(
 
     // Require at least one search parameter
     if (!ghinNumber && !firstName && !lastName && !email && !state && !country && !clubName && !associationId) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Must provide at least one search parameter'
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Must provide at least one search parameter'
       });
     }
 
@@ -324,12 +305,10 @@ router.post(
       });
     } catch (error) {
       logger.error('Player search error', { error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: 'Player search failed',
-          retryable: true
-        }
+      sendErrorReply(res, 502, {
+        code: 'GHIN_API_ERROR',
+        message: 'Player search failed',
+        retryable: true
       });
     }
   }
@@ -350,13 +329,11 @@ function sendGolferAccessError(res, error) {
   const known = Object.prototype.hasOwnProperty.call(GOLFER_ACCESS_ERROR_RESPONSES, error.code);
   const response = known ? GOLFER_ACCESS_ERROR_RESPONSES[error.code] : GOLFER_ACCESS_OTHER_ERROR;
   const code = known ? error.code : GOLFER_ACCESS_OTHER_ERROR.code;
-  return res.status(response.status).json({
-    error: {
-      code,
-      message: error.message,
-      usgaStatus: Number.isInteger(error.status) ? error.status : null,
-      retryable: response.retryable
-    }
+  return sendErrorReply(res, response.status, {
+    code,
+    message: error.message,
+    usgaStatus: Number.isInteger(error.status) ? error.status : null,
+    retryable: response.retryable
   });
 }
 
@@ -375,12 +352,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid request body',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid request body',
+        details: errors.array()
       });
     }
 
@@ -392,12 +367,10 @@ router.post(
 
       const player = await ghinClient.getPlayer(ghinNumber);
       if (!player) {
-        return res.status(404).json({
-          error: {
-            code: 'GHIN_PLAYER_NOT_FOUND',
-            message: `Player with GHIN number ${ghinNumber} not found`,
-            retryable: false
-          }
+        return sendErrorReply(res, 404, {
+          code: 'GHIN_PLAYER_NOT_FOUND',
+          message: `Player with GHIN number ${ghinNumber} not found`,
+          retryable: false
         });
       }
 
@@ -425,12 +398,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid GHIN number format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid GHIN number format',
+        details: errors.array()
       });
     }
 
@@ -443,12 +414,10 @@ router.get(
       return res.json(result);
     } catch (error) {
       logger.error('Error fetching golfer product access status', { ghinNumber, error: error.message });
-      return res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: error.message || 'Failed to fetch golfer product access status',
-          retryable: true
-        }
+      return sendErrorReply(res, 502, {
+        code: 'GHIN_API_ERROR',
+        message: readCaughtErrorMessage(error, 'Failed to fetch golfer product access status'),
+        retryable: true
       });
     }
   }
@@ -462,12 +431,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid GHIN number format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid GHIN number format',
+        details: errors.array()
       });
     }
 
@@ -486,12 +453,10 @@ router.post(
       });
     } catch (error) {
       logger.error('Error approving golfer product access', { ghinNumber, error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: error.message || 'Failed to approve golfer product access',
-          retryable: false
-        }
+      sendErrorReply(res, 502, {
+        code: 'GHIN_API_ERROR',
+        message: readCaughtErrorMessage(error, 'Failed to approve golfer product access'),
+        retryable: false
       });
     }
   }
@@ -505,12 +470,10 @@ router.delete(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid GHIN number format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid GHIN number format',
+        details: errors.array()
       });
     }
 
@@ -543,12 +506,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid GHIN number format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid GHIN number format',
+        details: errors.array()
       });
     }
 
@@ -560,12 +521,11 @@ router.get(
       return res.json(result);
     } catch (error) {
       logger.error('Error fetching golfer privacy settings', { ghinNumber, error: error.message });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'GHIN_API_ERROR',
-          message: error.message || 'Failed to fetch golfer privacy settings',
-          retryable: (error.status || 502) >= 500
-        }
+      return sendCaughtErrorReply(res, error, {
+        status: 502,
+        code: 'GHIN_API_ERROR',
+        message: 'Failed to fetch golfer privacy settings',
+        reportsRetryable: true
       });
     }
   }
@@ -580,12 +540,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid golfer scores request',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid golfer scores request',
+        details: errors.array()
       });
     }
 
@@ -599,12 +557,11 @@ router.get(
       return res.json(result);
     } catch (error) {
       logger.error('Error fetching golfer scores', { ghinNumber, error: error.message });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'GHIN_API_ERROR',
-          message: error.message || 'Failed to fetch golfer scores',
-          retryable: (error.status || 502) >= 500
-        }
+      return sendCaughtErrorReply(res, error, {
+        status: 502,
+        code: 'GHIN_API_ERROR',
+        message: 'Failed to fetch golfer scores',
+        reportsRetryable: true
       });
     }
   }

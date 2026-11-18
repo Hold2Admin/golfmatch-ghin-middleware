@@ -6,6 +6,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply, readCaughtErrorMessage } = require('../utils/errorReplies');
 const ghinClient = require('../services/ghinClient');
 
 const logger = createLogger('calculations');
@@ -40,23 +41,19 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid calculation request',
-          details: errors.array(),
-        },
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid calculation request',
+        details: errors.array(),
       });
     }
 
     const { golferId, handicapIndex, courseRating, slopeRating, par, numberOfHoles, handicapAllowance } = req.body;
 
     if (!golferId && handicapIndex == null) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Provide golferId or handicapIndex',
-        },
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Provide golferId or handicapIndex',
       });
     }
 
@@ -89,12 +86,10 @@ router.post(
       });
     } catch (err) {
       logger.error('manual-course-handicap failed', { error: err.message });
-      return res.status(502).json({
-        error: {
-          code: 'GHIN_UPSTREAM_ERROR',
-          message: err.message || 'GHIN calculation request failed',
-          retryable: true,
-        },
+      return sendErrorReply(res, 502, {
+        code: 'GHIN_UPSTREAM_ERROR',
+        message: readCaughtErrorMessage(err, 'GHIN calculation request failed'),
+        retryable: true,
       });
     }
   }
@@ -126,12 +121,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid playing-handicaps request',
-          details: errors.array(),
-        },
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid playing-handicaps request',
+        details: errors.array(),
       });
     }
 
@@ -139,11 +132,9 @@ router.post(
 
     for (const g of golfers) {
       if (!g.golferId && g.handicapIndex == null) {
-        return res.status(400).json({
-          error: {
-            code: 'INVALID_REQUEST',
-            message: 'Each golfer must have golferId or handicapIndex',
-          },
+        return sendErrorReply(res, 400, {
+          code: 'INVALID_REQUEST',
+          message: 'Each golfer must have golferId or handicapIndex',
         });
       }
     }
@@ -163,12 +154,10 @@ router.post(
       return res.json(result);
     } catch (err) {
       logger.error('playing-handicaps failed', { error: err.message });
-      return res.status(502).json({
-        error: {
-          code: 'GHIN_UPSTREAM_ERROR',
-          message: err.message || 'GHIN playing-handicaps request failed',
-          retryable: true,
-        },
+      return sendErrorReply(res, 502, {
+        code: 'GHIN_UPSTREAM_ERROR',
+        message: readCaughtErrorMessage(err, 'GHIN playing-handicaps request failed'),
+        retryable: true,
       });
     }
   }

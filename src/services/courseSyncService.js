@@ -23,6 +23,18 @@ let mirrorCallbacksInFlight = 0;
 const mirrorCallbackWaiters = [];
 const courseFetchInFlight = new Map();
 
+/** The one reader for a USGA course id: non-blank text or a number, trimmed. Anything else throws. */
+function readCourseId(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new Error(`USGA course id must be text or a number, got ${typeof value}`);
+  }
+  const id = String(value).trim();
+  if (id === '') {
+    throw new Error('USGA course id is required');
+  }
+  return id;
+}
+
 function getCacheWriteConcurrency() {
   const configured = Number(
     process.env.GHIN_CACHE_WRITE_CONCURRENCY
@@ -874,13 +886,9 @@ async function mergeCacheCourseChildren(tx, payload) {
 }
 
 function validateCourseMirrorShape(course) {
-  const courseId = String(course?.courseId || '').trim();
+  const courseId = readCourseId(course.courseId);
   const courseName = String(course?.courseName || '').trim();
   const tees = Array.isArray(course?.tees) ? course.tees : [];
-
-  if (!courseId) {
-    throw new Error('Missing required field: ghinCourseId');
-  }
 
   if (!courseName) {
     throw new Error(`Course ${courseId} missing required field: courseName`);
@@ -1795,8 +1803,7 @@ async function markCourseCacheInvalidated(courseId) {
 
 async function courseHasCachedRatings(courseId) {
   const sql = database.sql;
-  const id = String(courseId || '').trim();
-  if (!id) return false;
+  const id = readCourseId(courseId);
   const rows = await database.query(
     `SELECT TOP 1 1 AS hasRatings
      FROM dbo.GHIN_CourseTees
@@ -1886,10 +1893,7 @@ function applyRatingsOnlyToSnapshot(snapshot, course) {
 async function upsertCacheDbRatingsOnly(course, options = {}) {
   await ensureCacheTables();
   const sql = database.sql;
-  const id = String(course?.courseId || '').trim();
-  if (!id) {
-    throw new Error('courseId is required for ratings-only upsert');
-  }
+  const id = readCourseId(course.courseId);
 
   const now = options.now instanceof Date ? options.now : new Date();
   const expiry = courseCachePolicy.computeCacheExpiresAt(now, options);
@@ -1956,13 +1960,10 @@ async function upsertCacheDbRatingsOnly(course, options = {}) {
 async function mirrorRatingsOnlyToGolfDb(course) {
   const callbackUrl = requireMirrorCallbackUrl();
   const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
-  const id = String(course?.courseId || '').trim();
+  const id = readCourseId(course.courseId);
 
   if (!callbackApiKey) {
     throw new Error('GHIN_MIDDLEWARE_API_KEY is required to mirror ratings-only.');
-  }
-  if (!id) {
-    return { courseId: id, skipped: true, reason: 'missing_course_id' };
   }
 
   const tees = (course.tees || []).map((tee) => ({
@@ -1984,7 +1985,6 @@ async function mirrorRatingsOnlyToGolfDb(course) {
     body: JSON.stringify({
       ratingsOnly: true,
       ghinCourseId: id,
-      courseId: id,
       tees
     })
   }));
@@ -2038,7 +2038,7 @@ async function getOrFetchCourse(courseId, options = {}) {
     const totalMs = Date.now() - started;
     const path = timing.path === 'unknown' && result?.source ? result.source : timing.path;
     const details = {
-      courseId: String(courseId || ''),
+      courseId,
       path,
       source: result?.source,
       totalMs,
@@ -2067,10 +2067,7 @@ async function getOrFetchCourse(courseId, options = {}) {
 }
 
 async function getOrFetchCourseTimed(courseId, options, timing) {
-  const id = String(courseId || '').trim();
-  if (!id) {
-    throw new Error('courseId is required');
-  }
+  const id = readCourseId(courseId);
 
   await timing.step('ensureCacheTables', () => ensureCacheTables());
 
@@ -2184,9 +2181,15 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
 
     timing.path = 'usga_full_sync';
     await timing.step('processCourseSync', () => processCourseSync(course, syncOptions));
+    // Every working-set path sends the cache mirror shape (ghinCourseId, ghinTeeId, courseRating18...),
+    // so the full sync re-reads what it just wrote instead of sending the raw USGA course.
+    const synced = await timing.step('syncedSnapshot', () => readCourseCacheSnapshot(id));
+    if (!synced.exists) {
+      throw new Error(`Course ${id} is missing from the cache after its full sync`);
+    }
     const syncedFreshness = await timing.step('freshness', () => getCachedCourseFreshness(id));
     return {
-      course,
+      course: mirrorPayloadFromCacheSnapshot(synced),
       source: fromWebhook ? 'webhook_refetch' : 'usga_fetch',
       ratingsFresh: true,
       ratingsOnly: false,
@@ -2206,10 +2209,7 @@ async function getOrFetchCourseTimed(courseId, options, timing) {
 
 async function nullCacheDbTeeRatings(courseId) {
   const sql = database.sql;
-  const id = String(courseId || '').trim();
-  if (!id) {
-    return { courseId: id, nulledTees: 0 };
-  }
+  const id = readCourseId(courseId);
 
   return runWithCacheWriteRetry(id, async () => {
     const rows = await database.query(
@@ -2246,16 +2246,13 @@ async function nullCacheDbTeeRatings(courseId) {
 async function mirrorNullRatingsToGolfDb(courseId) {
   const callbackUrl = process.env.GHIN_IMPORT_CALLBACK_URL;
   const callbackApiKey = process.env.GHIN_MIDDLEWARE_API_KEY;
-  const id = String(courseId || '').trim();
+  const id = readCourseId(courseId);
 
   if (!callbackUrl) {
     throw new Error('GHIN_IMPORT_CALLBACK_URL is required to null GolfDB runtime ratings.');
   }
   if (!callbackApiKey) {
     throw new Error('GHIN_MIDDLEWARE_API_KEY is required to null GolfDB runtime ratings.');
-  }
-  if (!id) {
-    return { courseId: id, skipped: true, reason: 'missing_course_id' };
   }
 
   const response = await runWithMirrorCallbackSlot(async () => fetch(callbackUrl, {
@@ -2266,8 +2263,7 @@ async function mirrorNullRatingsToGolfDb(courseId) {
     },
     body: JSON.stringify({
       nullRatings: true,
-      ghinCourseId: id,
-      courseId: id
+      ghinCourseId: id
     })
   }));
 

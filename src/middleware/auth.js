@@ -4,6 +4,7 @@
 // ============================================================
 
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply } = require('../utils/errorReplies');
 
 const logger = createLogger('auth-middleware');
 
@@ -42,11 +43,9 @@ function apiKeyAuth(req, res, next) {
       ip: req.ip,
       userAgent: getUserAgent(req)
     });
-    return res.status(401).json({
-      error: {
-        code: 'MISSING_API_KEY',
-        message: 'X-API-Key header is required'
-      }
+    return sendErrorReply(res, 401, {
+      code: 'MISSING_API_KEY',
+      message: 'X-API-Key header is required'
     });
   }
 
@@ -60,11 +59,9 @@ function apiKeyAuth(req, res, next) {
       userAgent: getUserAgent(req),
       keyLength: apiKey.length
     });
-    return res.status(403).json({
-      error: {
-        code: 'INVALID_API_KEY',
-        message: 'Invalid API key'
-      }
+    return sendErrorReply(res, 403, {
+      code: 'INVALID_API_KEY',
+      message: 'Invalid API key'
     });
   }
 

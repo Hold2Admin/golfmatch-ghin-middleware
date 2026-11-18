@@ -6,6 +6,7 @@ const express = require('express');
 const router = express.Router();
 const { param, body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply, sendCaughtErrorReply } = require('../utils/errorReplies');
 const ghinClient = require('../services/ghinClient');
 const { transformGhinCourse, transformGhinTee, transformGhinHole } = require('../services/transformers/courseTransformer');
 const { getOrFetchCourse } = require('../services/courseSyncService');
@@ -130,7 +131,7 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ error: { code: 'INVALID_REQUEST', details: errors.array() } });
+      return sendErrorReply(res, 400, { code: 'INVALID_REQUEST', message: 'Invalid GHIN course ID', details: errors.array() });
     }
 
     try {
@@ -144,9 +145,7 @@ router.get(
       });
 
       if (result.notFound || !result.course) {
-        return res.status(404).json({
-          error: { code: 'COURSE_NOT_FOUND', message: `Course ${courseId} not found upstream.` }
-        });
+        return sendErrorReply(res, 404, { code: 'COURSE_NOT_FOUND', message: `Course ${courseId} not found upstream.` });
       }
 
       // The load already knows the cache expiry it read or wrote, so the route no longer re-queries it.
@@ -160,8 +159,10 @@ router.get(
       });
     } catch (error) {
       logger.error('working-set hydrate failed', { error: error.message, courseId: req.params.ghinCourseId });
-      return res.status(error.status || 500).json({
-        error: { code: error.code || 'WORKING_SET_HYDRATE_FAILED', message: error.message }
+      return sendCaughtErrorReply(res, error, {
+        status: 500,
+        code: 'WORKING_SET_HYDRATE_FAILED',
+        message: 'Failed to load course working set'
       });
     }
   }
@@ -174,12 +175,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid course ID format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid course ID format',
+        details: errors.array()
       });
     }
 
@@ -189,12 +188,10 @@ router.get(
     try {
       const season = await ghinClient.getCoursePostingSeason(ghinCourseId);
       if (!season) {
-        return res.status(404).json({
-          error: {
-            code: 'GHIN_COURSE_NOT_FOUND',
-            message: `Course with ID ${ghinCourseId} not found`,
-            retryable: false
-          }
+        return sendErrorReply(res, 404, {
+          code: 'GHIN_COURSE_NOT_FOUND',
+          message: `Course with ID ${ghinCourseId} not found`,
+          retryable: false
         });
       }
 
@@ -214,12 +211,11 @@ router.get(
       });
     } catch (error) {
       logger.error('Error fetching course posting season', { ghinCourseId, error: error.message, playedAt });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'GHIN_API_ERROR',
-          message: error.message || 'Failed to fetch course posting season',
-          retryable: (error.status || 500) >= 500
-        }
+      return sendCaughtErrorReply(res, error, {
+        status: 502,
+        code: 'GHIN_API_ERROR',
+        message: 'Failed to fetch course posting season',
+        reportsRetryable: true
       });
     }
   }
@@ -233,25 +229,19 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: { code: 'INVALID_REQUEST', message: 'Invalid course ID format', details: errors.array() }
-      });
+      return sendErrorReply(res, 400, { code: 'INVALID_REQUEST', message: 'Invalid course ID format', details: errors.array() });
     }
 
     const { ghinCourseId } = req.params;
     try {
       const location = await ghinClient.getCourseLocation(ghinCourseId);
       if (!location) {
-        return res.status(404).json({
-          error: { code: 'GHIN_COURSE_NOT_FOUND', message: `Course with ID ${ghinCourseId} not found`, retryable: false }
-        });
+        return sendErrorReply(res, 404, { code: 'GHIN_COURSE_NOT_FOUND', message: `Course with ID ${ghinCourseId} not found`, retryable: false });
       }
       return res.json({ success: true, ...location });
     } catch (error) {
       logger.error('Error fetching course location', { ghinCourseId, error: error.message });
-      return res.status(502).json({
-        error: { code: 'GHIN_API_ERROR', message: 'Failed to fetch course location', retryable: true }
-      });
+      return sendErrorReply(res, 502, { code: 'GHIN_API_ERROR', message: 'Failed to fetch course location', retryable: true });
     }
   }
 );
@@ -268,12 +258,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid tee posting eligibility request',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid tee posting eligibility request',
+        details: errors.array()
       });
     }
 
@@ -317,12 +305,11 @@ router.get(
         teeSetSide,
         error: error.message
       });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'GHIN_API_ERROR',
-          message: error.message || 'Failed to fetch tee posting eligibility',
-          retryable: (error.status || 500) >= 500
-        }
+      return sendCaughtErrorReply(res, error, {
+        status: 502,
+        code: 'GHIN_API_ERROR',
+        message: 'Failed to fetch tee posting eligibility',
+        reportsRetryable: true
       });
     }
   }
@@ -340,12 +327,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid course ID format',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid course ID format',
+        details: errors.array()
       });
     }
 
@@ -360,12 +345,10 @@ router.get(
       const ghinCourse = await ghinClient.getCourse(ghinCourseId);
       
       if (!ghinCourse) {
-        return res.status(404).json({
-          error: {
-            code: 'GHIN_COURSE_NOT_FOUND',
-            message: `Course with ID ${ghinCourseId} not found`,
-            retryable: false
-          }
+        return sendErrorReply(res, 404, {
+          code: 'GHIN_COURSE_NOT_FOUND',
+          message: `Course with ID ${ghinCourseId} not found`,
+          retryable: false
         });
       }
 
@@ -377,12 +360,10 @@ router.get(
       res.json(normalizedCourse);
     } catch (error) {
       logger.error('Error fetching course', { ghinCourseId, error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: 'Failed to fetch course from GHIN API',
-          retryable: true
-        }
+      sendErrorReply(res, 502, {
+        code: 'GHIN_API_ERROR',
+        message: 'Failed to fetch course from GHIN API',
+        retryable: true
       });
     }
   }
@@ -403,12 +384,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid search parameters',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid search parameters',
+        details: errors.array()
       });
     }
 
@@ -416,11 +395,9 @@ router.post(
 
     // Require at least one search parameter
     if (!courseName && !city && !state && !country) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Must provide at least one search parameter'
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Must provide at least one search parameter'
       });
     }
 
@@ -443,12 +420,10 @@ router.post(
       });
     } catch (error) {
       logger.error('Course search error', { error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'GHIN_API_ERROR',
-          message: 'Course search failed',
-          retryable: true
-        }
+      sendErrorReply(res, 502, {
+        code: 'GHIN_API_ERROR',
+        message: 'Course search failed',
+        retryable: true
       });
     }
   }
@@ -470,12 +445,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid import request',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid import request',
+        details: errors.array()
       });
     }
 
@@ -500,12 +473,10 @@ router.post(
       });
     } catch (error) {
       logger.error('Course import error', { error: error.message });
-      res.status(500).json({
-        error: {
-          code: 'IMPORT_FAILED',
-          message: 'Failed to import course',
-          retryable: true
-        }
+      sendErrorReply(res, 500, {
+        code: 'IMPORT_FAILED',
+        message: 'Failed to import course',
+        retryable: true
       });
     }
   }
@@ -523,9 +494,7 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: { code: 'INVALID_REQUEST', message: 'Invalid state', details: errors.array() }
-      });
+      return sendErrorReply(res, 400, { code: 'INVALID_REQUEST', message: 'Invalid state', details: errors.array() });
     }
     const { state } = req.params;
     try {
@@ -534,9 +503,7 @@ router.get(
       res.json({ results, totalResults: results.length });
     } catch (error) {
       logger.error('State course list error', { error: error.message });
-      res.status(502).json({
-        error: { code: 'GHIN_API_ERROR', message: 'Failed to list courses', retryable: true }
-      });
+      sendErrorReply(res, 502, { code: 'GHIN_API_ERROR', message: 'Failed to list courses', retryable: true });
     }
   }
 );
@@ -553,17 +520,13 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: { code: 'INVALID_REQUEST', message: 'Invalid course ID', details: errors.array() }
-      });
+      return sendErrorReply(res, 400, { code: 'INVALID_REQUEST', message: 'Invalid course ID', details: errors.array() });
     }
     const { ghinCourseId } = req.params;
     try {
       const ghinCourse = await ghinClient.getCourse(ghinCourseId);
       if (!ghinCourse) {
-        return res.status(404).json({
-          error: { code: 'GHIN_COURSE_NOT_FOUND', message: `Course ${ghinCourseId} not found` }
-        });
+        return sendErrorReply(res, 404, { code: 'GHIN_COURSE_NOT_FOUND', message: `Course ${ghinCourseId} not found` });
       }
       const tees = (ghinCourse.tees || []).map(transformGhinTee).map((t) => ({
         ghinTeeId: t.ghinTeeId,
@@ -581,9 +544,7 @@ router.get(
       res.json({ courseId: ghinCourseId, lastUpdatedUtc: (ghinCourse.lastUpdatedUtc || ghinCourse.updatedAt || null), tees });
     } catch (error) {
       logger.error('Fetch tees error', { ghinCourseId, error: error.message });
-      res.status(502).json({
-        error: { code: 'GHIN_API_ERROR', message: 'Failed to fetch tees', retryable: true }
-      });
+      sendErrorReply(res, 502, { code: 'GHIN_API_ERROR', message: 'Failed to fetch tees', retryable: true });
     }
   }
 );
@@ -600,42 +561,30 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: { code: 'INVALID_REQUEST', message: 'Invalid course ID', details: errors.array() }
-      });
+      return sendErrorReply(res, 400, { code: 'INVALID_REQUEST', message: 'Invalid course ID', details: errors.array() });
     }
     const { ghinCourseId } = req.params;
     const { teeId, gender } = req.query;
     if (!teeId || !gender) {
-      return res.status(400).json({
-        error: { code: 'INVALID_REQUEST', message: 'teeId and gender are required' }
-      });
+      return sendErrorReply(res, 400, { code: 'INVALID_REQUEST', message: 'teeId and gender are required' });
     }
     try {
       const ghinCourse = await ghinClient.getCourse(ghinCourseId);
       if (!ghinCourse) {
-        return res.status(404).json({
-          error: { code: 'GHIN_COURSE_NOT_FOUND', message: `Course ${ghinCourseId} not found` }
-        });
+        return sendErrorReply(res, 404, { code: 'GHIN_COURSE_NOT_FOUND', message: `Course ${ghinCourseId} not found` });
       }
       const tee = (ghinCourse.tees || []).find((t) => String(t.teeId) === String(teeId) && String(t.gender).toUpperCase() === String(gender).toUpperCase());
       if (!tee) {
-        return res.status(404).json({
-          error: { code: 'TEE_NOT_FOUND', message: `Tee ${teeId} (${gender}) not found` }
-        });
+        return sendErrorReply(res, 404, { code: 'TEE_NOT_FOUND', message: `Tee ${teeId} (${gender}) not found` });
       }
       const holes = (tee.holes || []).map(transformGhinHole);
       if (holes.length !== 18) {
-        return res.status(422).json({
-          error: { code: 'INVALID_BASELINE', message: 'Expected 18 holes' }
-        });
+        return sendErrorReply(res, 422, { code: 'INVALID_BASELINE', message: 'Expected 18 holes' });
       }
       res.json({ courseId: ghinCourseId, teeId, gender: String(gender).toUpperCase(), holes });
     } catch (error) {
       logger.error('Fetch holes error', { ghinCourseId, error: error.message });
-      res.status(502).json({
-        error: { code: 'GHIN_API_ERROR', message: 'Failed to fetch holes', retryable: true }
-      });
+      sendErrorReply(res, 502, { code: 'GHIN_API_ERROR', message: 'Failed to fetch holes', retryable: true });
     }
   }
 );

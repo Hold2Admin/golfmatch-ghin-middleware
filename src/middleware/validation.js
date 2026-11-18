@@ -4,6 +4,7 @@
 // ============================================================
 
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply } = require('../utils/errorReplies');
 
 const logger = createLogger('validation');
 
@@ -42,13 +43,11 @@ function validateRequest(req, res, next) {
       contentType,
       ip: req.ip
     });
-    return res.status(415).json({
-      error: {
-        code: 'UNSUPPORTED_MEDIA_TYPE',
-        message: acceptsFormEncodedWebhook(req)
-          ? 'Content-Type must be application/json or application/x-www-form-urlencoded'
-          : 'Content-Type must be application/json'
-      }
+    return sendErrorReply(res, 415, {
+      code: 'UNSUPPORTED_MEDIA_TYPE',
+      message: acceptsFormEncodedWebhook(req)
+        ? 'Content-Type must be application/json or application/x-www-form-urlencoded'
+        : 'Content-Type must be application/json'
     });
   }
 
@@ -77,11 +76,9 @@ function sanitizeHeaders(req, res, next) {
         length: value.length,
         ip: req.ip
       });
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_HEADER',
-          message: `Header ${header} is too large`
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_HEADER',
+        message: `Header ${header} is too large`
       });
     }
   });

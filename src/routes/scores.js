@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, param, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply, readCaughtErrorReply } = require('../utils/errorReplies');
 const scorePostingService = require('../services/scorePostingService');
 
 const router = express.Router();
@@ -12,12 +13,10 @@ function failValidation(req, res) {
     return null;
   }
 
-  return res.status(400).json({
-    error: {
-      code: 'INVALID_REQUEST',
-      message: 'Invalid score posting request',
-      details: errors.array()
-    }
+  return sendErrorReply(res, 400, {
+    code: 'INVALID_REQUEST',
+    message: 'Invalid score posting request',
+    details: errors.array()
   });
 }
 
@@ -45,11 +44,9 @@ router.post(
     }
 
     if (req.body.mode === 'hbh' && !Array.isArray(req.body.hole_details)) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'hole_details is required for hbh posting mode'
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'hole_details is required for hbh posting mode'
       });
     }
 
@@ -63,13 +60,8 @@ router.post(
         error: error.message,
         mode: req.body?.mode
       });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'SCORE_POST_FAILED',
-          message: error.message
-        },
-        correlationId: req.correlationId
-      });
+      const reply = readCaughtErrorReply(error, { status: 502, code: 'SCORE_POST_FAILED', message: 'Score post failed' });
+      return sendErrorReply(res, reply.status, { ...reply.error, correlationId: req.correlationId });
     }
   }
 );
@@ -100,13 +92,8 @@ router.get(
         correlationId: req.correlationId,
         error: error.message
       });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'SCORE_SEARCH_FAILED',
-          message: error.message
-        },
-        correlationId: req.correlationId
-      });
+      const reply = readCaughtErrorReply(error, { status: 502, code: 'SCORE_SEARCH_FAILED', message: 'Score search failed' });
+      return sendErrorReply(res, reply.status, { ...reply.error, correlationId: req.correlationId });
     }
   }
 );
@@ -129,13 +116,8 @@ router.get(
         error: error.message,
         scoreId: req.params.scoreId
       });
-      return res.status(error.status || 502).json({
-        error: {
-          code: error.code || 'SCORE_FETCH_FAILED',
-          message: error.message
-        },
-        correlationId: req.correlationId
-      });
+      const reply = readCaughtErrorReply(error, { status: 502, code: 'SCORE_FETCH_FAILED', message: 'Score fetch failed' });
+      return sendErrorReply(res, reply.status, { ...reply.error, correlationId: req.correlationId });
     }
   }
 );

@@ -5,6 +5,7 @@
 // ============================================================
 
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply } = require('../utils/errorReplies');
 
 const logger = createLogger('rate-limiting');
 
@@ -64,12 +65,10 @@ function rateLimiter(options = {}) {
       });
 
       res.set('Retry-After', retryAfter);
-      return res.status(429).json({
-        error: {
-          code: 'RATE_LIMIT_EXCEEDED',
-          message: `Too many requests. Try again in ${retryAfter} seconds.`,
-          retryAfter
-        }
+      return sendErrorReply(res, 429, {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: `Too many requests. Try again in ${retryAfter} seconds.`,
+        retryAfter
       });
     }
 

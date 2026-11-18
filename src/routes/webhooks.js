@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { body, query, validationResult } = require('express-validator');
 const { createLogger } = require('../utils/logger');
+const { sendErrorReply, readCaughtErrorReply, sendCaughtErrorReply } = require('../utils/errorReplies');
 const usaGhinApiClient = require('../services/usaGhinApiClient');
 const { processCourseSync, reconcileCourses, reconcileAllCandidates, getOrFetchCourse, markCourseCacheInvalidated, purgeExpiredCacheCourses } = require('../services/courseSyncService');
 const { ensureCourseWebhook, getCourseWebhookStatus, ensureGpaWebhook, getGpaWebhookStatus } = require('../services/ghinWebhookService');
@@ -190,12 +191,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Missing or invalid webhook token parameter.',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Missing or invalid webhook token parameter.',
+        details: errors.array()
       });
     }
 
@@ -253,27 +252,26 @@ router.post(
         cacheMode: fetchResult.cacheMode
       });
     } catch (error) {
-      const status = error.status || 500;
+      const reply = readCaughtErrorReply(error, {
+        status: 500,
+        code: 'WEBHOOK_PROCESSING_ERROR',
+        message: 'Course webhook processing failed'
+      });
       logger.error('Course webhook processing failed', {
-        status,
-        code: error.code || 'WEBHOOK_PROCESSING_ERROR',
+        status: reply.status,
+        code: reply.error.code,
         error: error.message
       });
 
       await notifyCourseWebhookEvent('course.webhook.failed', req, {
         courseId: getCourseIdFromPayload(req.body),
         status: 'failed',
-        httpStatus: status,
-        code: error.code || 'WEBHOOK_PROCESSING_ERROR',
+        httpStatus: reply.status,
+        code: reply.error.code,
         error: error.message
       });
 
-      return res.status(status).json({
-        error: {
-          code: error.code || 'WEBHOOK_PROCESSING_ERROR',
-          message: error.message
-        }
-      });
+      return sendErrorReply(res, reply.status, reply.error);
     }
   }
 );
@@ -284,12 +282,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Missing or invalid webhook token parameter.',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Missing or invalid webhook token parameter.',
+        details: errors.array()
       });
     }
 
@@ -337,19 +333,18 @@ router.post(
         callbackResult
       });
     } catch (error) {
-      const status = error.status || 500;
+      const reply = readCaughtErrorReply(error, {
+        status: 500,
+        code: 'WEBHOOK_PROCESSING_ERROR',
+        message: 'GPA webhook processing failed'
+      });
       logger.error('GPA webhook processing failed', {
-        status,
-        code: error.code || 'WEBHOOK_PROCESSING_ERROR',
+        status: reply.status,
+        code: reply.error.code,
         error: error.message
       });
 
-      return res.status(status).json({
-        error: {
-          code: error.code || 'WEBHOOK_PROCESSING_ERROR',
-          message: error.message
-        }
-      });
+      return sendErrorReply(res, reply.status, reply.error);
     }
   }
 );
@@ -361,11 +356,9 @@ router.get('/ghin/course/status', async (_req, res) => {
     res.json(status);
   } catch (error) {
     logger.error('Failed to fetch course webhook status', { error: error.message });
-    res.status(502).json({
-      error: {
-        code: 'WEBHOOK_STATUS_FAILED',
-        message: error.message
-      }
+    sendErrorReply(res, 502, {
+      code: 'WEBHOOK_STATUS_FAILED',
+      message: error.message
     });
   }
 });
@@ -377,11 +370,9 @@ router.get('/ghin/gpa/status', async (_req, res) => {
     res.json(status);
   } catch (error) {
     logger.error('Failed to fetch GPA webhook status', { error: error.message });
-    res.status(502).json({
-      error: {
-        code: 'WEBHOOK_STATUS_FAILED',
-        message: error.message
-      }
+    sendErrorReply(res, 502, {
+      code: 'WEBHOOK_STATUS_FAILED',
+      message: error.message
     });
   }
 });
@@ -412,12 +403,10 @@ router.get(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid list query parameters.',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid list query parameters.',
+        details: errors.array()
       });
     }
 
@@ -429,11 +418,9 @@ router.get(
       res.json({ page, perPage, list });
     } catch (error) {
       logger.error('Failed to list course webhooks', { error: error.message });
-      res.status(502).json({
-        error: {
-          code: 'WEBHOOK_LIST_FAILED',
-          message: error.message
-        }
+      sendErrorReply(res, 502, {
+        code: 'WEBHOOK_LIST_FAILED',
+        message: error.message
       });
     }
   }
@@ -446,11 +433,9 @@ router.post('/ghin/course/test', async (_req, res) => {
     res.json({ type: 'course', result });
   } catch (error) {
     logger.error('Failed to trigger course webhook test', { error: error.message });
-    res.status(502).json({
-      error: {
-        code: 'WEBHOOK_TEST_FAILED',
-        message: error.message
-      }
+    sendErrorReply(res, 502, {
+      code: 'WEBHOOK_TEST_FAILED',
+      message: error.message
     });
   }
 });
@@ -462,11 +447,9 @@ router.post('/ghin/gpa/test', async (_req, res) => {
     res.json({ type: 'gpa', result });
   } catch (error) {
     logger.error('Failed to trigger GPA webhook test', { error: error.message });
-    res.status(502).json({
-      error: {
-        code: 'WEBHOOK_TEST_FAILED',
-        message: error.message
-      }
+    sendErrorReply(res, 502, {
+      code: 'WEBHOOK_TEST_FAILED',
+      message: error.message
     });
   }
 });
@@ -477,12 +460,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid ensure webhook request body.',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid ensure webhook request body.',
+        details: errors.array()
       });
     }
 
@@ -495,11 +476,9 @@ router.post(
       res.json(result);
     } catch (error) {
       logger.error('Failed to ensure course webhook settings', { error: error.message });
-      res.status(500).json({
-        error: {
-          code: 'WEBHOOK_ENSURE_FAILED',
-          message: error.message
-        }
+      sendErrorReply(res, 500, {
+        code: 'WEBHOOK_ENSURE_FAILED',
+        message: error.message
       });
     }
   }
@@ -511,12 +490,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid ensure webhook request body.',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid ensure webhook request body.',
+        details: errors.array()
       });
     }
 
@@ -529,11 +506,9 @@ router.post(
       res.json(result);
     } catch (error) {
       logger.error('Failed to ensure GPA webhook settings', { error: error.message });
-      res.status(500).json({
-        error: {
-          code: 'WEBHOOK_ENSURE_FAILED',
-          message: error.message
-        }
+      sendErrorReply(res, 500, {
+        code: 'WEBHOOK_ENSURE_FAILED',
+        message: error.message
       });
     }
   }
@@ -552,12 +527,10 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid reconciliation request body.',
-          details: errors.array()
-        }
+      return sendErrorReply(res, 400, {
+        code: 'INVALID_REQUEST',
+        message: 'Invalid reconciliation request body.',
+        details: errors.array()
       });
     }
 
@@ -632,11 +605,9 @@ router.post(
       });
     } catch (error) {
       logger.error('Course reconciliation failed', { error: error.message });
-      res.status(500).json({
-        error: {
-          code: 'RECONCILIATION_FAILED',
-          message: error.message
-        }
+      sendErrorReply(res, 500, {
+        code: 'RECONCILIATION_FAILED',
+        message: error.message
       });
     }
   }
@@ -651,8 +622,10 @@ router.post('/ghin/course/purge-expired', async (req, res) => {
     return res.json({ status: 'ok', ...result });
   } catch (error) {
     logger.error('purge-expired failed', { error: error.message });
-    return res.status(error.status || 500).json({
-      error: { code: error.code || 'PURGE_EXPIRED_FAILED', message: error.message }
+    return sendCaughtErrorReply(res, error, {
+      status: 500,
+      code: 'PURGE_EXPIRED_FAILED',
+      message: 'Failed to purge expired courses'
     });
   }
 });
