@@ -1097,14 +1097,15 @@ function mirrorPayloadFromCacheSnapshot(snapshot) {
 
   const course = snapshot.courseRow;
   const { tees, allHoles } = snapshot;
-  const holesByTee = new Map();
+  // Every cached tee starts with its own (possibly empty) hole list; holes are read for these tees only.
+  const holesByTee = new Map(tees.map((tee) => [String(tee.teeId), []]));
 
   for (const hole of allHoles) {
-    const key = String(hole.teeId);
-    if (!holesByTee.has(key)) {
-      holesByTee.set(key, []);
+    const teeHoles = holesByTee.get(String(hole.teeId));
+    if (!teeHoles) {
+      throw new Error(`Cached hole row for tee ${hole.teeId} on course ${course.courseId} has no GHIN_Tees row`);
     }
-    holesByTee.get(key).push({
+    teeHoles.push({
       holeNumber: hole.holeNumber,
       par: hole.par,
       handicap: hole.handicap,
@@ -1115,12 +1116,12 @@ function mirrorPayloadFromCacheSnapshot(snapshot) {
   return {
     ghinCourseId: String(course.courseId),
     courseName: course.courseName,
-    shortCourseName: course.shortCourseName || null,
+    shortCourseName: course.shortCourseName,
     facilityName: course.facilityName || course.courseName || null,
-    city: course.city || null,
-    state: course.state || null,
-    country: course.country || 'USA',
-    facilityId: course.facilityId || null,
+    city: course.city,
+    state: course.state,
+    country: course.country,
+    facilityId: course.facilityId,
     // Cache schema does not persist an external source timestamp today.
     // Keep this null to avoid false hash drift between incoming and cached payloads.
     sourceLastChangedAt: null,
@@ -1128,21 +1129,21 @@ function mirrorPayloadFromCacheSnapshot(snapshot) {
       ghinTeeId: String(tee.teeId),
       teeName: tee.teeName,
       gender: normalizeMirrorGender(tee.gender),
-      teeSetSide: tee.teeSetSide || 'All18',
+      teeSetSide: tee.teeSetSide,
       isDefault: tee.isDefault ? 1 : 0,
-      courseRating18: tee.courseRating18 ?? null,
-      slopeRating18: tee.slopeRating18 ?? null,
-      par18: tee.par18 ?? null,
-      yardage18: tee.yardage18 ?? null,
-      courseRatingF9: tee.courseRatingF9 ?? null,
-      slopeRatingF9: tee.slopeRatingF9 ?? null,
-      parF9: tee.parF9 ?? null,
-      yardageF9: tee.yardageF9 ?? null,
-      courseRatingB9: tee.courseRatingB9 ?? null,
-      slopeRatingB9: tee.slopeRatingB9 ?? null,
-      parB9: tee.parB9 ?? null,
-      yardageB9: tee.yardageB9 ?? null,
-      holes: (holesByTee.get(String(tee.teeId)) || []).map((hole) => ({
+      courseRating18: tee.courseRating18,
+      slopeRating18: tee.slopeRating18,
+      par18: tee.par18,
+      yardage18: tee.yardage18,
+      courseRatingF9: tee.courseRatingF9,
+      slopeRatingF9: tee.slopeRatingF9,
+      parF9: tee.parF9,
+      yardageF9: tee.yardageF9,
+      courseRatingB9: tee.courseRatingB9,
+      slopeRatingB9: tee.slopeRatingB9,
+      parB9: tee.parB9,
+      yardageB9: tee.yardageB9,
+      holes: holesByTee.get(String(tee.teeId)).map((hole) => ({
         holeNumber: hole.holeNumber,
         par: hole.par,
         handicap: hole.handicap,
