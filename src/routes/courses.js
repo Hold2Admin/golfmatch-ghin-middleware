@@ -280,6 +280,7 @@ router.get(
       });
       const scopedRows = eligibleRows.filter((row) => row.teeSetSide === teeSetSide);
       const { match, matchedBy } = resolvePostingTeeMatch(scopedRows, requestedTeeSetId);
+      const hasMatch = Boolean(match);
 
       return res.json({
         success: true,
@@ -288,12 +289,12 @@ router.get(
         gender,
         numberOfHoles,
         teeSetSide,
-        isEligible: Boolean(match),
+        isEligible: hasMatch,
         matchedBy,
-        matchedTeeSetId: match?.teeSetRatingId || null,
-        matchedLegacyCrpTeeId: match?.legacyCrpTeeId || null,
-        matchedDisplayName: match?.displayName || null,
-        matchedRatingType: match?.ratingType || null,
+        matchedTeeSetId: hasMatch ? match.teeSetRatingId : null,
+        matchedLegacyCrpTeeId: hasMatch ? match.legacyCrpTeeId : null,
+        matchedDisplayName: hasMatch ? match.displayName : null,
+        matchedRatingType: hasMatch ? match.ratingType : null,
         eligibleTeeSets: summarizePostingRows(scopedRows)
       });
     } catch (error) {
