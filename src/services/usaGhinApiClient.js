@@ -1301,7 +1301,9 @@ function _normalizeCourse(data, courseId) {
     tees: teeSets.map((tee, idx) => {
       const ratings = tee.Ratings ?? [];
       const totalRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'total') || {};
-      const frontRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'front') || {};
+      const frontRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'front');
+      // GHIN sends no Front rating -> the tee's F9 rating is written as NULL, never another rating.
+      const hasFrontRating = frontRating !== undefined;
       const backRating  = ratings.find(r => String(r.RatingType).toLowerCase() === 'back')  || {};
 
       const holes = (tee.Holes ?? []).map(h => ({
@@ -1324,8 +1326,8 @@ function _normalizeCourse(data, courseId) {
         slope: totalRating.SlopeRating ?? null,
         par: tee.TotalPar ?? null,
         yardage: tee.TotalYardage ?? null,
-        courseRatingF9: frontRating.CourseRating ?? null,
-        slopeRatingF9: frontRating.SlopeRating ?? null,
+        courseRatingF9: hasFrontRating ? frontRating.CourseRating : null,
+        slopeRatingF9: hasFrontRating ? frontRating.SlopeRating : null,
         parF9: f9Holes.length === 9 ? f9Holes.reduce((s, h) => s + (h.par || 0), 0) : null,
         yardageF9: f9Holes.length === 9 ? f9Holes.reduce((s, h) => s + (h.yardage || 0), 0) : null,
         courseRatingB9: backRating.CourseRating ?? null,
