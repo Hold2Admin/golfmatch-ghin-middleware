@@ -43,9 +43,10 @@ function cloneAndNormalizeHole(hole, nextHoleNumber = null) {
 function summarizeTeeForAudit(tee, extra = {}) {
   return {
     teeId: tee.teeId,
-    teeName: tee?.teeName || null,
-    gender: tee?.gender || null,
-    teeSetSide: tee?.teeSetSide || 'All18',
+    // Audit reports the tee exactly as GHIN sent it (an invalid tee can be missing any of these).
+    teeName: tee.teeName,
+    gender: tee.gender,
+    teeSetSide: tee.teeSetSide,
     ...extra
   };
 }
@@ -293,8 +294,13 @@ function normalizeFrontNineOnlyCourse(course) {
       throw new Error(`Course ${course.courseId} tee ${tee.teeId} could not be normalized to 9 holes.`);
     }
 
-    const parF9 = tee?.parF9 ?? selectedHoles.reduce((total, hole) => total + Number(hole?.par || 0), 0);
-    const yardageF9 = tee?.yardageF9 ?? selectedHoles.reduce((total, hole) => total + Number(hole?.yardage || 0), 0);
+    // The normalized tee is exactly these nine holes, so its par and yardage come from them
+    // (validateCourseForSync rejects a hole with no par; yardage stays null unless every hole has one).
+    const parF9 = selectedHoles.reduce((total, hole) => total + Number(hole.par), 0);
+    const everyHoleHasYardage = selectedHoles.every((hole) => hole.yardage != null);
+    const yardageF9 = everyHoleHasYardage
+      ? selectedHoles.reduce((total, hole) => total + Number(hole.yardage), 0)
+      : null;
 
     transformedTees.push({
       ...tee,
