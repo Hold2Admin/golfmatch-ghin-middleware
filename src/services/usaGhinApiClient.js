@@ -1300,11 +1300,13 @@ function _normalizeCourse(data, courseId) {
     ),
     tees: teeSets.map((tee, idx) => {
       const ratings = tee.Ratings ?? [];
-      const totalRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'total') || {};
+      const totalRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'total');
       const frontRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'front');
-      // GHIN sends no Front rating -> the tee's F9 rating is written as NULL, never another rating.
+      const backRating = ratings.find(r => String(r.RatingType).toLowerCase() === 'back');
+      // A rating GHIN does not send is written as NULL, never another rating.
+      const hasTotalRating = totalRating !== undefined;
       const hasFrontRating = frontRating !== undefined;
-      const backRating  = ratings.find(r => String(r.RatingType).toLowerCase() === 'back')  || {};
+      const hasBackRating = backRating !== undefined;
 
       const holes = (tee.Holes ?? []).map(h => ({
         holeNumber: h.Number,
@@ -1322,16 +1324,16 @@ function _normalizeCourse(data, courseId) {
         gender: (tee.Gender || '').toUpperCase().startsWith('M') ? 'M' : 'W',
         isDefault: idx === 0,
         teeSetSide: tee.TeeSetSide ?? 'All18',
-        courseRating: totalRating.CourseRating ?? null,
-        slope: totalRating.SlopeRating ?? null,
+        courseRating: hasTotalRating ? totalRating.CourseRating : null,
+        slope: hasTotalRating ? totalRating.SlopeRating : null,
         par: tee.TotalPar ?? null,
         yardage: tee.TotalYardage ?? null,
         courseRatingF9: hasFrontRating ? frontRating.CourseRating : null,
         slopeRatingF9: hasFrontRating ? frontRating.SlopeRating : null,
         parF9: f9Holes.length === 9 ? f9Holes.reduce((s, h) => s + (h.par || 0), 0) : null,
         yardageF9: f9Holes.length === 9 ? f9Holes.reduce((s, h) => s + (h.yardage || 0), 0) : null,
-        courseRatingB9: backRating.CourseRating ?? null,
-        slopeRatingB9: backRating.SlopeRating ?? null,
+        courseRatingB9: hasBackRating ? backRating.CourseRating : null,
+        slopeRatingB9: hasBackRating ? backRating.SlopeRating : null,
         parB9: b9Holes.length === 9 ? b9Holes.reduce((s, h) => s + (h.par || 0), 0) : null,
         yardageB9: b9Holes.length === 9 ? b9Holes.reduce((s, h) => s + (h.yardage || 0), 0) : null,
         holes
