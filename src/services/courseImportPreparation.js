@@ -301,16 +301,18 @@ function normalizeFrontNineOnlyCourse(course) {
     const yardageF9 = everyHoleHasYardage
       ? selectedHoles.reduce((total, hole) => total + Number(hole.yardage), 0)
       : null;
+    // The tee's rating is GHIN's Front rating (courseRatingF9/slopeRatingF9), never its Total (18-hole) rating.
+    // GHIN sends no Front rating -> the tee has no rating, the same NULL state the ratings day-cache leaves.
 
     transformedTees.push({
       ...tee,
       teeSetSide: 'F9',
-      courseRating: tee?.courseRatingF9 ?? tee?.courseRating ?? null,
-      slope: tee?.slopeRatingF9 ?? tee?.slope ?? null,
+      courseRating: tee.courseRatingF9,
+      slope: tee.slopeRatingF9,
       par: parF9,
       yardage: yardageF9,
-      courseRatingF9: tee?.courseRatingF9 ?? tee?.courseRating ?? null,
-      slopeRatingF9: tee?.slopeRatingF9 ?? tee?.slope ?? null,
+      courseRatingF9: tee.courseRatingF9,
+      slopeRatingF9: tee.slopeRatingF9,
       parF9,
       yardageF9,
       courseRatingB9: null,
