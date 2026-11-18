@@ -2,6 +2,9 @@
 // Health Endpoint Integration Tests
 // ============================================================
 
+// src/index.js reads the CORS origin list when it loads, and fails without it; the test supplies its own.
+process.env.MIDDLEWARE_ALLOWED_ORIGINS = 'http://localhost';
+
 const request = require('supertest');
 const app = require('../src/index');
 
