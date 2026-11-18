@@ -151,23 +151,27 @@ async function forwardWebhookPayload(callbackUrlEnvKey, payload, forwardHeaders 
   });
 
   const bodyText = await response.text();
-  let parsed = null;
-  try {
-    parsed = bodyText ? JSON.parse(bodyText) : null;
-  } catch (_) {
-    parsed = null;
-  }
 
   if (!response.ok) {
-    const details = parsed ? JSON.stringify(parsed) : bodyText;
     logger.error('Webhook forward failed', {
       traceId: traceContext.traceId || null,
       callbackUrl,
       status: response.status,
       webhookId: traceContext.webhookId || null,
-      responseBody: details
+      responseBody: bodyText
     });
-    throw Object.assign(new Error(`Webhook forward failed (${response.status}): ${details}`), {
+    throw Object.assign(new Error(`Webhook forward failed (${response.status}): ${bodyText}`), {
+      status: 502,
+      code: 'WEBHOOK_FORWARD_FAILED'
+    });
+  }
+
+  // The API callback always answers with JSON; an empty or unparseable success body is a failed forward.
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch (parseError) {
+    throw Object.assign(new Error(`Webhook forward returned a body that is not JSON (${response.status}): ${parseError.message}`), {
       status: 502,
       code: 'WEBHOOK_FORWARD_FAILED'
     });

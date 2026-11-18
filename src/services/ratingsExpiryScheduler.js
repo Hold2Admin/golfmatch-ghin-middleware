@@ -179,24 +179,21 @@ async function runOnce(options = {}) {
             now: new Date()
           });
 
-          if (summary?.skipped) {
+          // purgeExpiredCacheCourses returns skipped, nulledCourses, nulledTees, mirrorFailures and courseIds on every path.
+          if (summary.skipped) {
             const skipped = { ...summary, trigger };
             logger.info('Ratings-expiry skipped', skipped);
             return skipped;
           }
 
-          totalNulledCourses += Number(summary?.nulledCourses || 0);
-          totalNulledTees += Number(summary?.nulledTees || 0);
-          if (Array.isArray(summary?.mirrorFailures) && summary.mirrorFailures.length) {
-            allMirrorFailures.push(...summary.mirrorFailures);
-          }
-          if (Array.isArray(summary?.courseIds)) {
-            for (const id of summary.courseIds) {
-              if (sampleCourseIds.length < 20) sampleCourseIds.push(id);
-            }
+          totalNulledCourses += summary.nulledCourses;
+          totalNulledTees += summary.nulledTees;
+          allMirrorFailures.push(...summary.mirrorFailures);
+          for (const id of summary.courseIds) {
+            if (sampleCourseIds.length < 20) sampleCourseIds.push(id);
           }
 
-          if (!summary?.courseIds?.length || Number(summary?.nulledCourses || 0) === 0) {
+          if (summary.courseIds.length === 0 || summary.nulledCourses === 0) {
             break;
           }
         }

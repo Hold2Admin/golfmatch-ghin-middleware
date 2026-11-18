@@ -1,6 +1,7 @@
 const database = require('./database');
 const { createLogger } = require('../utils/logger');
 const { trackDependency } = require('../utils/appinsights');
+const { readCallbackReply } = require('../utils/callbackReplies');
 const usaGhinApiClient = require('./usaGhinApiClient');
 const { prepareCourseForImport } = require('./courseImportPreparation');
 const crypto = require('crypto');
@@ -291,10 +292,15 @@ function hashPayload(payload) {
   return crypto.createHash('sha256').update(serialized).digest('hex');
 }
 
+/** Hash input for the tee structure; both mirror payload builders always set ghinCourseId and a tees array. */
 function buildTeeStructurePayload(payload) {
+  readCourseId(payload.ghinCourseId);
+  if (!Array.isArray(payload.tees)) {
+    throw new Error(`Mirror payload for course ${payload.ghinCourseId} has no tees array`);
+  }
   return {
-    ghinCourseId: payload?.ghinCourseId || null,
-    tees: payload?.tees || []
+    ghinCourseId: payload.ghinCourseId,
+    tees: payload.tees
   };
 }
 
@@ -1336,33 +1342,18 @@ async function syncMirrorForCourse(course) {
       body: JSON.stringify(payload)
     }));
 
-    const bodyText = await response.text();
-    let parsed = null;
-    try {
-      parsed = bodyText ? JSON.parse(bodyText) : null;
-    } catch (_) {
-      parsed = null;
+    const isRetryable = !response.ok && response.status >= 500 && attempt < maxAttempts;
+    if (!isRetryable) {
+      return readCallbackReply(response, 'Mirror callback');
     }
 
-    if (response.ok) {
-      return parsed;
-    }
-
-    const details = parsed ? JSON.stringify(parsed) : bodyText;
-    const isRetryable = response.status >= 500 && attempt < maxAttempts;
-
-    if (isRetryable) {
-      logger.warn('Mirror callback failed, retrying', {
-        courseId: course.courseId,
-        attempt,
-        maxAttempts,
-        status: response.status
-      });
-      await sleep(250 * attempt);
-      continue;
-    }
-
-    throw new Error(`Mirror callback failed (${response.status}): ${details}`);
+    logger.warn('Mirror callback failed, retrying', {
+      courseId: course.courseId,
+      attempt,
+      maxAttempts,
+      status: response.status
+    });
+    await sleep(250 * attempt);
   }
 
   throw new Error('Mirror callback failed after retries.');
@@ -1559,7 +1550,10 @@ async function reconcileCourses(courseIds, options = {}) {
 }
 
 async function reconcileCoursesInternal(courseIds, options = {}) {
-  const ids = Array.from(new Set((courseIds || []).map((id) => String(id).trim()).filter(Boolean)));
+  if (!Array.isArray(courseIds)) {
+    throw new Error('Course reconciliation needs an array of course ids');
+  }
+  const ids = Array.from(new Set(courseIds.map(readCourseId)));
   const concurrency = Number.isFinite(options.concurrency)
     ? Math.max(1, Math.floor(options.concurrency))
     : Math.max(1, Math.floor(Number(process.env.GHIN_RECONCILIATION_CONCURRENCY || 3)));
@@ -1989,20 +1983,7 @@ async function mirrorRatingsOnlyToGolfDb(course) {
     })
   }));
 
-  const bodyText = await response.text();
-  let parsed = null;
-  try {
-    parsed = bodyText ? JSON.parse(bodyText) : null;
-  } catch (_) {
-    parsed = null;
-  }
-
-  if (!response.ok) {
-    const details = parsed ? JSON.stringify(parsed) : bodyText;
-    throw new Error(`Ratings-only mirror callback failed (${response.status}): ${details}`);
-  }
-
-  return parsed || { success: true, ghinCourseId: id };
+  return readCallbackReply(response, 'Ratings-only mirror callback');
 }
 
 /**
@@ -2267,20 +2248,7 @@ async function mirrorNullRatingsToGolfDb(courseId) {
     })
   }));
 
-  const bodyText = await response.text();
-  let parsed = null;
-  try {
-    parsed = bodyText ? JSON.parse(bodyText) : null;
-  } catch (_) {
-    parsed = null;
-  }
-
-  if (!response.ok) {
-    const details = parsed ? JSON.stringify(parsed) : bodyText;
-    throw new Error(`Null-ratings mirror callback failed (${response.status}): ${details}`);
-  }
-
-  return parsed || { success: true, ghinCourseId: id };
+  return readCallbackReply(response, 'Null-ratings mirror callback');
 }
 
 async function listRatedGolfDbCourseIds(options = {}) {
@@ -2309,22 +2277,11 @@ async function listRatedGolfDbCourseIds(options = {}) {
     })
   }));
 
-  const bodyText = await response.text();
-  let parsed = null;
-  try {
-    parsed = bodyText ? JSON.parse(bodyText) : null;
-  } catch (_) {
-    parsed = null;
+  const reply = await readCallbackReply(response, 'List-rated GolfDB callback');
+  if (!Array.isArray(reply.courseIds)) {
+    throw new Error('List-rated GolfDB callback reply has no courseIds array');
   }
-
-  if (!response.ok) {
-    const details = parsed ? JSON.stringify(parsed) : bodyText;
-    throw new Error(`List-rated GolfDB callback failed (${response.status}): ${details}`);
-  }
-
-  const courseIds = Array.isArray(parsed?.courseIds)
-    ? parsed.courseIds.map((id) => String(id || '').trim()).filter(Boolean)
-    : [];
+  const courseIds = reply.courseIds.map(readCourseId);
 
   return {
     courseIds,
@@ -2355,7 +2312,7 @@ async function reconcileOrphanGolfDbRatings(options = {}) {
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.floor(limitRaw))) : 500;
 
   const listed = await listRatedGolfDbCourseIds({ limit });
-  const courseIds = listed.courseIds || [];
+  const { courseIds } = listed;
   let orphanCandidates = 0;
   let nulledCourses = 0;
   const mirrorFailures = [];
@@ -2465,7 +2422,8 @@ async function purgeExpiredCacheCourses(options = {}) {
     }
   ));
 
-  const courseIds = (expired || []).map((row) => String(row.courseId)).filter(Boolean);
+  // GHIN_Courses.CourseId is the key column.
+  const courseIds = expired.map((row) => readCourseId(row.courseId));
   if (courseIds.length === 0) {
     return {
       skipped: false,
