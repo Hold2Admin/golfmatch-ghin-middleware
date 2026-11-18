@@ -7,6 +7,7 @@
  */
 
 const specialImportOverrides = require('../config/specialCourseImportOverrides');
+const { readCourseId } = require('../utils/usgaIds');
 
 function cloneHole(hole) {
   return {
@@ -41,7 +42,7 @@ function cloneAndNormalizeHole(hole, nextHoleNumber = null) {
 
 function summarizeTeeForAudit(tee, extra = {}) {
   return {
-    teeId: String(tee?.teeId || ''),
+    teeId: tee.teeId,
     teeName: tee?.teeName || null,
     gender: tee?.gender || null,
     teeSetSide: tee?.teeSetSide || 'All18',
@@ -289,7 +290,7 @@ function normalizeFrontNineOnlyCourse(course) {
         .sort((left, right) => Number(left.holeNumber) - Number(right.holeNumber));
       selectedHoles = frontNine.map((hole, index) => cloneAndNormalizeHole(hole, index + 1));
     } else {
-      throw new Error(`Course ${course?.courseId || ''} tee ${tee?.teeId || ''} could not be normalized to 9 holes.`);
+      throw new Error(`Course ${course.courseId} tee ${tee.teeId} could not be normalized to 9 holes.`);
     }
 
     const parF9 = tee?.parF9 ?? selectedHoles.reduce((total, hole) => total + Number(hole?.par || 0), 0);
@@ -378,7 +379,7 @@ function tryNormalizeDuplicateHoleRowsCourse(course) {
   return {
     course: cloneCourse(course, transformedTees),
     specialImport: {
-      courseId: String(course?.courseId || ''),
+      courseId: readCourseId(course.courseId),
       courseName: course?.courseName || null,
       strategy: 'auto-dedupe-duplicate-hole-rows',
       note: 'Collapsed deterministic duplicate hole rows for tees where GHIN published each hole twice with identical values.',
@@ -422,7 +423,7 @@ function composeNineHoleComboCourse(comboCourse, frontCourse, backCourse, overri
 
     if (!frontTee || !backTee) {
       throw new Error(
-        `Course ${comboCourse?.courseId || ''} could not match combo tee ${comboTee?.teeName || ''}/${comboTee?.gender || ''} to component nines.`
+        `Course ${comboCourse.courseId} could not match combo tee ${comboTee.teeName}/${comboTee.gender} to component nines.`
       );
     }
 
@@ -506,7 +507,7 @@ function tryPrepareAutomaticPruneImport(course, validateCourseForSync, triggerEr
     applied: true,
     course: prunedCourse,
     specialImport: {
-      courseId: String(course.courseId || ''),
+      courseId: readCourseId(course.courseId),
       courseName: course.courseName || null,
       strategy: 'auto-drop-invalid-tees',
       note: 'Partial import: kept every complete tee and dropped only the invalid tees listed in prunedTees.',
@@ -536,7 +537,7 @@ function tryPrepareSpecialImport(course, override, validateCourseForSync, trigge
       applied: true,
       course: transformedCourse,
       specialImport: {
-        courseId: String(course.courseId || ''),
+        courseId: readCourseId(course.courseId),
         courseName: course.courseName || null,
         strategy: override.strategy,
         note: override.note || null,
@@ -578,7 +579,7 @@ function tryPrepareSpecialImport(course, override, validateCourseForSync, trigge
     applied: true,
     course: prunedCourse,
     specialImport: {
-      courseId: String(course.courseId || ''),
+      courseId: readCourseId(course.courseId),
       courseName: course.courseName || null,
       strategy: override.strategy,
       note: override.note || null,
@@ -630,7 +631,7 @@ async function prepareCourseForBackfill(course, validateCourseForSync, context =
         applied: true,
         course: composedCourse,
         specialImport: {
-          courseId: String(course.courseId || ''),
+          courseId: readCourseId(course.courseId),
           courseName: course.courseName || null,
           strategy: override.strategy,
           note: override.note || null,

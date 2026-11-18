@@ -9,6 +9,7 @@
 const config = require('../config');
 const { createLogger } = require('../utils/logger');
 const { trackDependency } = require('../utils/appinsights');
+const { readCourseId } = require('../utils/usgaIds');
 
 const logger = createLogger('usaGhinApiClient');
 
@@ -601,10 +602,7 @@ async function _fetchCourseTeePostingEligibility(courseId, numberOfHoles, teeSet
 }
 
 async function getCourseTeePostingEligibility(courseId, options = {}) {
-  const normalizedCourseId = String(courseId || '').trim();
-  if (!normalizedCourseId) {
-    throw new Error('courseId is required');
-  }
+  const normalizedCourseId = readCourseId(courseId);
 
   const normalizedGender = _normalizePostingGender(options.gender);
   const normalizedHoleCount = _normalizePostingHoleCount(options.numberOfHoles);
@@ -944,13 +942,10 @@ function _normalizeCourseHandicapTeeSet(row) {
 }
 
 async function getCourseHandicaps(params = {}) {
-  const courseId = String(params.courseId || '').trim();
+  const courseId = readCourseId(params.courseId);
   const golferId = params.golferId != null ? String(params.golferId).trim() : '';
   const handicapIndex = params.handicapIndex != null ? String(params.handicapIndex).trim() : '';
 
-  if (!courseId) {
-    throw new Error('courseId is required');
-  }
   if (!golferId && !handicapIndex) {
     throw new Error('golferId or handicapIndex is required');
   }

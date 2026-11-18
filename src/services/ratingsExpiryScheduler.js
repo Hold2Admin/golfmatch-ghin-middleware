@@ -251,7 +251,7 @@ async function runOnce(options = {}) {
                 error: orphanErr && orphanErr.message ? orphanErr.message : String(orphanErr)
               }
             ],
-            sampleCourseIds: orphan.sampleCourseIds || []
+            sampleCourseIds: orphan.sampleCourseIds
           };
         }
 

@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const database = require('./database');
 const { getMetricsSnapshot } = require('./syncMetricsService');
 const { createLogger } = require('../utils/logger');
+const { readCourseId } = require('../utils/usgaIds');
 
 const logger = createLogger('reconciliationHistoryService');
 
@@ -270,7 +271,7 @@ async function insertRunResults(runId, results) {
         (@runId, @courseId, @status, @skipped, @payloadHash, @errorMessage)`,
       {
         runId: { type: sql.UniqueIdentifier, value: runId },
-        courseId: { type: sql.VarChar(50), value: String(result.courseId || '') },
+        courseId: { type: sql.VarChar(50), value: readCourseId(result.courseId) },
         status: { type: sql.NVarChar(30), value: String(result.status || 'unknown') },
         skipped: { type: sql.Bit, value: result.skipped == null ? null : (result.skipped ? 1 : 0) },
         payloadHash: { type: sql.VarChar(64), value: result.hash ? String(result.hash) : null },

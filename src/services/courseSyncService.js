@@ -14,6 +14,7 @@ const {
 } = require('./syncMetricsService');
 const { persistReconciliationRun } = require('./reconciliationHistoryService');
 const courseCachePolicy = require('./courseCachePolicy');
+const { readId, readCourseId, readGhinTeeId } = require('../utils/usgaIds');
 
 const logger = createLogger('courseSyncService');
 const CACHE_TTL_DAYS = courseCachePolicy.LEGACY_TTL_DAYS;
@@ -25,17 +26,6 @@ const mirrorCallbackWaiters = [];
 const courseFetchInFlight = new Map();
 
 /** The one reader for a USGA course id: non-blank text or a number, trimmed. Anything else throws. */
-function readCourseId(value) {
-  if (typeof value !== 'string' && typeof value !== 'number') {
-    throw new Error(`USGA course id must be text or a number, got ${typeof value}`);
-  }
-  const id = String(value).trim();
-  if (id === '') {
-    throw new Error('USGA course id is required');
-  }
-  return id;
-}
-
 function getCacheWriteConcurrency() {
   const configured = Number(
     process.env.GHIN_CACHE_WRITE_CONCURRENCY
@@ -239,11 +229,7 @@ function buildMirrorPayload(course) {
 }
 
 function teeSortKey(tee) {
-  const id = String(tee?.ghinTeeId || '').trim();
-  if (id) {
-    return `id:${id}`;
-  }
-  return `name:${String(tee?.teeName || '')}|${String(tee?.gender || '')}|${String(tee?.teeSetSide || '')}`;
+  return readGhinTeeId(tee.ghinTeeId);
 }
 
 // Align with golfmatch-api normalizeCoursePayload: tee order / hole order must not affect hash.
@@ -905,14 +891,10 @@ function validateCourseMirrorShape(course) {
   }
 
   tees.forEach((tee, teeIndex) => {
-    const teeId = String(tee?.teeId || '').trim();
+    const teeId = readId(tee.teeId, `Course ${courseId} tees[${teeIndex}] ghinTeeId`);
     const teeName = String(tee?.teeName || '').trim();
     const holes = Array.isArray(tee?.holes) ? tee.holes : [];
     const seenHoleNumbers = new Set();
-
-    if (!teeId) {
-      throw new Error(`Course ${courseId} tees[${teeIndex}] missing ghinTeeId`);
-    }
 
     if (!teeName) {
       throw new Error(`Course ${courseId} tees[${teeIndex}] missing teeName`);
