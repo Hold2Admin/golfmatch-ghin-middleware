@@ -21,6 +21,11 @@ You can add `. .\scripts\gm.ps1` to your PowerShell profile for auto-load.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Where the middleware runs (fixed facts of this system, not secrets): Azure for gmx, the laptop for gm-local.
+# -Base still overrides either one.
+$GmProdBaseUrl = 'https://golfmatch-ghin-middleware.azurewebsites.net'
+$GmLocalBaseUrl = 'http://localhost:5001'
+
 function Set-GmKey {
   <#
   Fetch API key from Azure Key Vault and store in GHIN_MW_API_KEY env var.
@@ -44,11 +49,8 @@ function gmx {
     [string]$Method = 'GET',
     [string]$Body,
     [switch]$Pretty,
-    [string]$Base = $env:GHIN_MIDDLEWARE_BASE_URL
+    [string]$Base = $GmProdBaseUrl
   )
-  if (-not $Base) {
-    throw 'Set GHIN_MIDDLEWARE_BASE_URL (or pass -Base) to the middleware base URL.'
-  }
   if (-not $env:GHIN_MW_API_KEY) {
     Write-Host 'GHIN_MW_API_KEY is not set. Running Set-GmKey to fetch from Key Vault...'
     Set-GmKey
@@ -94,10 +96,7 @@ function gm-local {
     [string]$Body,
     [switch]$Pretty
   )
-  if (-not $env:GHIN_MIDDLEWARE_LOCAL_BASE_URL) {
-    throw 'Set GHIN_MIDDLEWARE_LOCAL_BASE_URL to the local middleware base URL.'
-  }
-  gmx -Path $Path -Method $Method -Body $Body -Pretty:$Pretty -Base $env:GHIN_MIDDLEWARE_LOCAL_BASE_URL
+  gmx -Path $Path -Method $Method -Body $Body -Pretty:$Pretty -Base $GmLocalBaseUrl
 }
 
 # ---------------------------------------------

@@ -2,9 +2,6 @@
 // GHIN Middleware API - Entry Point
 // ============================================================
 
-// Local settings (.env.local) first, before any process.env read (src/config/localEnv.js).
-require('./config/localEnv').loadLocalEnvFile();
-
 const { Worker } = require('worker_threads');
 
 const startupClock = {
