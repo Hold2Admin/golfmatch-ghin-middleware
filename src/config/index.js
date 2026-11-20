@@ -5,7 +5,7 @@
 // Note: Secrets are loaded from Key Vault via src/config/secrets.js
 // process.env is populated either by:
 // - Azure App Service (production) with Key Vault references
-// - loadSecrets() in development (Key Vault or .env.local fallback)
+// - loadSecrets() in development (Key Vault), plus local-only settings from .env.local (src/config/localEnv.js)
 
 function parseBoolean(value) {
   if (typeof value !== 'string') {

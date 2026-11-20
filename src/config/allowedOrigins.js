@@ -1,7 +1,7 @@
 /**
  * The browser origins allowed to call the middleware: MIDDLEWARE_ALLOWED_ORIGINS,
  * a comma-separated list of exact origins (the App Service setting in Azure,
- * .env.local in development). One reader; a missing or empty list stops startup.
+ * .env.local in development, loaded by src/config/localEnv.js). One reader; a missing or empty list stops startup.
  */
 function readAllowedOrigins() {
   const rawOrigins = process.env.MIDDLEWARE_ALLOWED_ORIGINS;
